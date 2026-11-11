@@ -16,7 +16,7 @@ export type JobPhase = 'chunking' | 'transcribing' | 'chaptering' | 'persisting'
  * « Détails techniques » nettoyé.
  */
 export const OPENROUTER_KEY_MISSING_MESSAGE =
-  "La clé OpenRouter est manquante ou refusée. Renseignez une clé valide dans le fichier .env (OPENROUTER_API_KEY), puis relancez le serveur.";
+  "La clé OpenRouter est manquante ou refusée. Enregistrez une clé valide dans la page Administration (/admin).";
 export const OPENROUTER_CREDIT_MESSAGE = 'Crédit OpenRouter insuffisant pour transcrire ce fichier.';
 export const OPENROUTER_RATE_LIMIT_MESSAGE = "Trop de requêtes envoyées à OpenRouter d'un coup. Réessayez dans une minute.";
 
