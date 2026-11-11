@@ -13,12 +13,24 @@ import { videos, segments, chapters } from './db/schema';
 import { fetchMeta, fetchTranscript, listChannelVideos } from './youtube';
 import { proposeChapters, buildWarnings, chaptersToText } from './chapters';
 import { generateLocalChapters, persistLocalChapters } from './local-chapters';
-import { createJobRegistry, type JobInput, type JobPipeline } from './jobs';
+import { createJobRegistry, type JobFailureLogger, type JobInput, type JobPipeline } from './jobs';
 import { MEDIA_EXTENSIONS, UploadError, saveUpload, sweepStaleUploads } from './upload';
+import { checkTools, defaultToolChecker, MEDIA_UNREADABLE_MESSAGE, type ToolChecker } from './media-check';
 
 // Une seule source de vérité pour les extensions acceptées (liste MEDIA_DIR
 // et envoi de fichier).
 export { MEDIA_EXTENSIONS } from './upload';
+
+/**
+ * Durée minimale des morceaux demandable à l'interface (secondes). Le champ de
+ * la page annonce `min="30"` : on l'applique réellement côté serveur, sinon une
+ * valeur pathologique (1 s) créerait des milliers de morceaux et autant d'appels
+ * ffprobe.
+ */
+export const MIN_CHUNK_SEC_UI = 30;
+
+/** Message d'erreur (français) d'une durée de morceau trop courte. */
+export const CHUNK_SEC_TOO_SHORT_MESSAGE = `Durée des morceaux invalide : indiquez au moins ${MIN_CHUNK_SEC_UI} secondes.`;
 
 export type AppOptions = {
   /** Pipeline de chapitrage injectable (tests) ; par défaut, le pipeline réel. */
@@ -27,6 +39,12 @@ export type AppOptions = {
   logger?: boolean;
   /** Nettoyage des dossiers d'envoi abandonnés au démarrage (défaut : oui). */
   sweepStaleUploads?: boolean;
+  /** Vérification ffmpeg/ffprobe injectable (tests, endpoint de santé). */
+  toolChecker?: ToolChecker;
+  /** Trace serveur des échecs de job (tests) ; par défaut `app.log.error`. */
+  jobLogger?: JobFailureLogger;
+  /** Détection des outils au démarrage (défaut : oui). */
+  preflight?: boolean;
 };
 
 const idParam = z.object({ id: z.string().min(1) });
@@ -90,6 +108,26 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     app.log.error(err);
     return reply.code(500).send({ error: err instanceof Error ? err.message : 'internal error' });
   });
+
+  // Préflight : ffmpeg et ffprobe sont-ils exécutables, et à quelle version ?
+  // Non bloquant et jamais fatal : le serveur démarre même sans eux, mais
+  // l'absence est visible dans le terminal ET via GET /local/health.
+  const toolChecker = options.toolChecker ?? defaultToolChecker;
+  if (options.preflight !== false) {
+    void checkTools(toolChecker).then((tools) => {
+      if (!tools.ffmpeg.ok || !tools.ffprobe.ok) {
+        app.log.warn(
+          { ffmpeg: tools.ffmpeg, ffprobe: tools.ffprobe },
+          'ffmpeg ou ffprobe introuvable : le chapitrage local ne pourra pas fonctionner.',
+        );
+      } else {
+        app.log.info(
+          { ffmpeg: tools.ffmpeg.version, ffprobe: tools.ffprobe.version },
+          'Outils média détectés (ffmpeg, ffprobe).',
+        );
+      }
+    });
+  }
 
   // Envoi de fichier : le corps brut (flux) est remis tel quel à la route, qui
   // l'écrit au fur et à mesure. Aucun tamponnage mémoire, donc aucune limite
@@ -312,7 +350,17 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     };
   };
 
-  const registry = createJobRegistry(options.pipeline ?? realPipeline);
+  const registry = createJobRegistry(options.pipeline ?? realPipeline, {
+    // Trace SERVEUR : le terminal affiche la cause BRUTE (chemins, commande
+    // ffmpeg), tandis que la page ne reçoit qu'un message nettoyé et tronqué.
+    logger:
+      options.jobLogger ??
+      ((failure) =>
+        app.log.error(
+          { jobId: failure.jobId, phase: failure.phase, elapsedMs: failure.elapsedMs, err: failure.error },
+          `Échec du chapitrage (phase : ${failure.phase}).`,
+        )),
+  });
 
   // ---------- local media ----------
 
@@ -357,27 +405,54 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
 
   const jobInput = z.object({
     path: z.string().min(1),
-    chunkSec: z.number().int().positive().optional(),
+    // Le plancher d'interface (30 s) est appliqué explicitement plus bas, avec
+    // un message français : on accepte donc 0 ici pour que la valeur reçoive
+    // elle aussi ce message plutôt qu'une erreur de schéma illisible.
+    chunkSec: z.number().int().min(0).optional(),
     lang: z.string().min(2).optional(),
     maxChunks: z.number().int().positive().optional(),
   });
 
   // Options d'un envoi : passées en paramètres de requête (le corps est le fichier).
   const uploadQuery = z.object({
-    chunkSec: z.coerce.number().int().positive().optional(),
+    chunkSec: z.coerce.number().int().min(0).optional(),
     lang: z.string().min(2).optional(),
     maxChunks: z.coerce.number().int().positive().optional(),
   });
 
-  /** Plafond d'un envoi : `UPLOAD_MAX_MB` (défaut 2048 Mo). */
-  function uploadMaxBytes(): number {
+  /** Plafond d'un envoi en Mo : `UPLOAD_MAX_MB` (défaut 2048 Mo). */
+  function uploadMaxMb(): number {
     const mb = Number(process.env.UPLOAD_MAX_MB);
-    return (Number.isFinite(mb) && mb > 0 ? mb : 2048) * 1024 * 1024;
+    return Number.isFinite(mb) && mb > 0 ? mb : 2048;
   }
+
+  /** Plafond d'un envoi en octets. */
+  function uploadMaxBytes(): number {
+    return uploadMaxMb() * 1024 * 1024;
+  }
+
+  // ---------- santé (préflight visible par la page) ----------
+
+  // ffmpeg/ffprobe sont-ils utilisables ? La page interroge cette route au
+  // chargement pour prévenir AVANT de lancer un chapitrage voué à l'échec.
+  app.get('/local/health', async () => {
+    const tools = await checkTools(toolChecker);
+    const dir = mediaDir();
+    return {
+      ffmpeg: { ok: tools.ffmpeg.ok, ...(tools.ffmpeg.version ? { version: tools.ffmpeg.version } : {}) },
+      ffprobe: { ok: tools.ffprobe.ok, ...(tools.ffprobe.version ? { version: tools.ffprobe.version } : {}) },
+      mediaDir: dir,
+      mediaDirExists: await isDirectory(dir),
+      uploadMaxMb: uploadMaxMb(),
+    };
+  });
 
   // Démarre un job (page) : le chemin doit être un fichier de MEDIA_DIR.
   app.post('/local/jobs', async (req, reply) => {
     const body = jobInput.parse(req.body);
+    if (body.chunkSec !== undefined && body.chunkSec < MIN_CHUNK_SEC_UI) {
+      return reply.code(400).send({ error: CHUNK_SEC_TOO_SHORT_MESSAGE });
+    }
     const dir = mediaDir();
     const target = resolve(body.path);
     if (!isInsideDir(target, dir)) {
@@ -393,6 +468,11 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     }
     if (!info.isFile()) {
       return reply.code(404).send({ error: "Ce chemin ne correspond pas à un fichier." });
+    }
+    // Un fichier vide ne peut rien donner : refus immédiat avec le message
+    // actionnable, plutôt qu'un job qui échoue plus tard sur ffmpeg.
+    if (info.size === 0) {
+      return reply.code(400).send({ error: MEDIA_UNREADABLE_MESSAGE });
     }
     const input: JobInput = {
       path: target,
@@ -410,6 +490,12 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   // dès que le job atteint un état terminal (succès, erreur ou annulation).
   app.post('/local/jobs/upload', async (req, reply) => {
     const query = uploadQuery.parse(req.query);
+
+    // Le plancher est vérifié AVANT de consommer le corps : on ne lit pas
+    // plusieurs gigaoctets pour refuser ensuite la requête.
+    if (query.chunkSec !== undefined && query.chunkSec < MIN_CHUNK_SEC_UI) {
+      return reply.code(400).send({ error: CHUNK_SEC_TOO_SHORT_MESSAGE });
+    }
 
     const header = req.headers['x-filename'];
     const rawHeader = Array.isArray(header) ? header[0] : header;
@@ -440,6 +526,13 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       return reply
         .code(500)
         .send({ error: "L'envoi du fichier a échoué. Réessayez, ou choisissez un autre fichier." });
+    }
+
+    // Un fichier vide (envoi interrompu, fichier fantôme) ne produira rien :
+    // refus immédiat en français, et le dossier temporaire est supprimé.
+    if (saved.bytes === 0) {
+      await saved.cleanup();
+      return reply.code(400).send({ error: MEDIA_UNREADABLE_MESSAGE });
     }
 
     const job = registry.createJob({

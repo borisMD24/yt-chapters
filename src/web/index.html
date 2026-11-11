@@ -515,6 +515,11 @@
         </div>
       </noscript>
 
+      <!-- Santé des outils (ffmpeg/ffprobe) : visible dès le chargement -->
+      <div id="health-banner" class="banner warn" role="status" hidden>
+        <p id="health-text"></p>
+      </div>
+
       <!-- Étape 1 -->
       <section class="step" aria-labelledby="title-1">
         <h2 id="title-1"><span class="stepnum" aria-hidden="true">1</span> Choisir un fichier</h2>
@@ -651,6 +656,11 @@
             <div id="tech-error" hidden>
               <p style="margin: 0 0 6px"><strong>Dernière erreur signalée par l'outil</strong></p>
               <pre id="tech-error-text" style="white-space: pre-wrap; word-break: break-word; margin: 0"></pre>
+              <p class="help" style="margin: 8px 0 0">
+                Détail raccourci volontairement : la cause complète (commande et sortie d'erreur) s'affiche dans la
+                fenêtre du serveur. Si ffmpeg ou ffprobe manque, installez-le (ou ajoutez-le au PATH), puis relancez le
+                serveur.
+              </p>
             </div>
           </div>
         </details>
@@ -707,6 +717,8 @@
           techFold: $('tech-fold'),
           techError: $('tech-error'),
           techErrorText: $('tech-error-text'),
+          healthBanner: $('health-banner'),
+          healthText: $('health-text'),
         };
 
         // ---------- utilitaires ----------
@@ -756,6 +768,42 @@
         function setBusy(busy) {
           state.busy = busy;
           els.generate.disabled = busy;
+        }
+
+        // ---------- santé des outils ----------
+
+        /**
+         * Interroge /local/health et affiche un bandeau si ffmpeg/ffprobe manque.
+         * Appelée au chargement (pour prévenir AVANT de lancer) et après un échec
+         * (pour rendre la cause visible au même endroit). Jamais bloquante.
+         */
+        function loadHealth() {
+          fetch('/local/health')
+            .then(readJson)
+            .then((res) => {
+              var data = (res && res.data) || {};
+              var missing = [];
+              if (data.ffmpeg && data.ffmpeg.ok === false) missing.push('ffmpeg');
+              if (data.ffprobe && data.ffprobe.ok === false) missing.push('ffprobe');
+              if (!missing.length) {
+                els.healthText.textContent = '';
+                els.healthBanner.hidden = true;
+                return;
+              }
+              var pluriel = missing.length > 1;
+              els.healthText.textContent =
+                missing.join(' et ') +
+                (pluriel ? ' sont introuvables' : ' est introuvable') +
+                ' sur cet ordinateur. ' +
+                (pluriel ? 'Installez-les' : 'Installez-le') +
+                ' (ou ' +
+                (pluriel ? 'ajoutez-les' : 'ajoutez-le') +
+                " au PATH), puis relancez le serveur : sans ffmpeg, le chapitrage ne peut pas fonctionner.";
+              els.healthBanner.hidden = false;
+            })
+            .catch(() => {
+              /* page utilisable même si la santé est indisponible */
+            });
         }
 
         // ---------- étape 1 : sources (envoi, liste, chemin) ----------
@@ -1039,11 +1087,14 @@
           els.cancel.hidden = true;
           showError(typeof message === 'string' ? message : "Une erreur est survenue.");
           if (detail) {
-            // Détail technique nettoyé : rendu dans le repli « Détails techniques ».
+            // Détail technique nettoyé ET tronqué par le serveur : rendu dans le
+            // repli « Détails techniques », accompagné du rappel français.
             els.techErrorText.textContent = detail;
             els.techError.hidden = false;
             els.techFold.open = true;
           }
+          // La cause peut être un binaire manquant : on rafraîchit le bandeau.
+          loadHealth();
         }
 
         function stopPolling() {
@@ -1337,6 +1388,7 @@
 
         loadMedia();
         loadHistory();
+        loadHealth();
         updateChoiceNote();
       })();
     </script>

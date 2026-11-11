@@ -5,6 +5,7 @@
 // - Annulation coopérative via AbortSignal.
 // - Aucune clé d'API n'est stockée ni renvoyée : les erreurs sont nettoyées.
 import { randomUUID } from 'node:crypto';
+import { MediaValidationError, MEDIA_TOOLS_MISSING_MESSAGE } from './media-check';
 
 export type JobStatus = 'queued' | 'running' | 'cancelling' | 'done' | 'error' | 'cancelled';
 export type JobPhase = 'chunking' | 'transcribing' | 'chaptering' | 'persisting' | 'done';
@@ -75,7 +76,26 @@ export type JobRegistryOptions = {
    * disponible pour l'affichage.
    */
   maxRetainedFinished?: number;
+  /**
+   * Trace SERVEUR d'un échec de job (jamais renvoyée au navigateur). Reçoit
+   * l'erreur BRUTE (elle peut contenir des chemins ou une ligne de commande
+   * ffmpeg) : l'appelant décide du format (ici : `app.log.error`).
+   */
+  logger?: JobFailureLogger;
 };
+
+/** Trace d'un échec de job, telle que reçue par le logger serveur. */
+export type JobFailure = {
+  jobId: string;
+  /** Phase atteinte au moment de l'échec. */
+  phase: JobPhase;
+  /** Temps écoulé depuis le démarrage du pipeline (ms). */
+  elapsedMs: number;
+  /** Erreur BRUTE d'origine : jamais exposée au navigateur. */
+  error: unknown;
+};
+
+export type JobFailureLogger = (failure: JobFailure) => void;
 
 /** Message d'état français déduit de la phase et de l'avancement. */
 function messageFor(job: Job): string {
@@ -92,6 +112,13 @@ function messageFor(job: Job): string {
       return 'Chapitres prêts.';
   }
 }
+
+/**
+ * Plafond du détail technique envoyé au navigateur. Assez large pour lire la
+ * cause utile, assez court pour qu'une ligne de commande ffmpeg complète (avec
+ * ses chemins absolus) ne s'affiche jamais en entier dans la page.
+ */
+export const MAX_TECHNICAL_DETAIL = 500;
 
 /**
  * Retire tout secret (clés OpenRouter, tokens Bearer) ET tout chemin de fichier
@@ -124,14 +151,20 @@ export function sanitizeErrorMessage(message: string): string {
     )
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 400);
+    .slice(0, MAX_TECHNICAL_DETAIL);
 }
 
 /** Traduit une erreur technique en message non technique. */
 export function friendlyErrorMessage(err: unknown): string {
+  // Les erreurs de contrôle média portent DÉJÀ un message français actionnable
+  // (fichier muet, illisible, ffmpeg absent) : on le renvoie tel quel.
+  if (err instanceof MediaValidationError) return err.message;
   const raw = err instanceof Error ? err.message : String(err);
   if (/OPENROUTER_API_KEY|clé\s*d'?api|api key/i.test(raw)) {
     return "Le service de transcription n'est pas configuré. Contactez la personne qui a installé l'outil.";
+  }
+  if (/ffmpeg est introuvable|spawn (ffmpeg|ffprobe) ENOENT/i.test(raw)) {
+    return MEDIA_TOOLS_MISSING_MESSAGE;
   }
   if (/ffmpeg|ffprobe|illisible|aucun chunk|ENOENT|EACCES|EPERM|EBUSY|spawn|EPIPE/i.test(raw)) {
     return "Impossible de lire ce fichier. Vérifiez qu'il n'est pas ouvert par un autre programme, puis réessayez.";
@@ -145,6 +178,8 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
   /** Nettoyage propre à chaque job (fichier temporaire d'un envoi), mémoïsé. */
   const cleanups = new Map<string, () => Promise<boolean>>();
   const maxFinished = opts.maxRetainedFinished ?? 20;
+  /** Trace d'échec : no-op par défaut (les tests injectent une espionne). */
+  const logFailure: JobFailureLogger = opts.logger ?? (() => {});
   /** Ids des jobs terminés, dans l'ordre d'achèvement (le plus récent en dernier). */
   const finishedOrder: string[] = [];
   let tail: Promise<void> = Promise.resolve();
@@ -251,6 +286,7 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
       return;
     }
     job.status = 'running';
+    const startedAt = Date.now();
     try {
       const result = await pipeline(input, {
         signal,
@@ -285,6 +321,9 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
         publishCancelled(job);
         return;
       }
+      // Trace SERVEUR : id, phase, durée et erreur BRUTE (chemins et commande
+      // ffmpeg compris). Le navigateur ne reçoit qu'un message nettoyé/tronqué.
+      logFailure({ jobId: job.id, phase: job.phase, elapsedMs: Date.now() - startedAt, error: err });
       job.error = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
       job.message = friendlyErrorMessage(err);
       job.status = 'error';

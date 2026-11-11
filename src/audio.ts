@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { MediaValidationError, checkMedia, isToolMissingError, MEDIA_TOOLS_MISSING_MESSAGE } from './media-check';
 
 const run = promisify(execFile);
 const BIG = { maxBuffer: 64 * 1024 * 1024 };
@@ -105,7 +106,6 @@ export async function chunkToMp3(
   opts: { chunkSec?: number; maxChunks?: number } = {},
 ): Promise<ChunkResult> {
   const src = resolve(input);
-  await stat(src); // échoue tôt si le fichier est absent
 
   const chunkSec = opts.chunkSec && opts.chunkSec > 0 ? opts.chunkSec : DEFAULT_CHUNK_SEC;
   // Un chunk plus court que le plancher donnerait 0 chunk et un message trompeur
@@ -114,6 +114,10 @@ export async function chunkToMp3(
   if (!Number.isFinite(chunkSec) || chunkSec < MIN_CHUNK_SEC) {
     throw new Error(`durée de chunk invalide : ${chunkSec}s (minimum ${MIN_CHUNK_SEC}s)`);
   }
+  // Contrôle d'exploitabilité (piste audio présente, fichier non vide, ffprobe
+  // disponible) : lève une MediaValidationError au message français exploitable,
+  // et JAMAIS la ligne de commande ffmpeg. Avant tout fichier temporaire.
+  await checkMedia(src);
   // Nettoyage best-effort des dossiers abandonnés par un process tué (jamais les
   // dossiers frais : une session concurrente peut être en train d'écrire dedans).
   await sweepStaleChunkDirs();
@@ -167,6 +171,9 @@ export async function chunkToMp3(
     return { dir, chunks, cleanup };
   } catch (err) {
     await cleanup();
+    // ffmpeg absent au moment du passage : message actionnable plutôt qu'un
+    // « spawn ffmpeg ENOENT » incompréhensible (ffprobe pouvait être présent).
+    if (isToolMissingError(err)) throw new MediaValidationError('missing-tools', MEDIA_TOOLS_MISSING_MESSAGE);
     throw err;
   }
 }
