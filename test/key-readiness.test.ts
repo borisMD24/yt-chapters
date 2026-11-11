@@ -61,6 +61,57 @@ test('openRouterKeyStatus lit OPENROUTER_API_KEY quand aucune valeur n’est pas
   }
 });
 
+test('openRouterKeyStatus : les exemples documentés restent des placeholders', () => {
+  const placeholders = [
+    'sk-...',
+    'sk-or-...',
+    'sk-votre-cle-openrouter-ici',
+    'sk-your-key-here-openrouter',
+    'CHANGE_ME_OPENROUTER_KEY_ICI',
+    'sk-xxx-cle-openrouter-ici-xxxx',
+    'your-key-here',
+    'votre-cle',
+  ];
+  for (const value of placeholders) {
+    assert.deepEqual(openRouterKeyStatus(value), { ok: false, reason: 'placeholder' }, value);
+  }
+  assert.deepEqual(openRouterKeyStatus(''), { ok: false, reason: 'missing' });
+});
+
+/**
+ * Fuzz déterministe (PRNG à graine fixe) de clés RÉALISTES : aucune ne doit être
+ * prise pour un exemple, sans quoi une vraie clé serait refusée au démarrage.
+ * Trois formes : clé hexadécimale de 64 caractères, base64 (32 à 64), et longue
+ * suite alphanumérique (20 à 100) — la forme la plus exposée au motif d'exemple.
+ */
+test('openRouterKeyStatus : le fuzz de clés réalistes ne rejette rien à tort', () => {
+  const HEX = '0123456789abcdef';
+  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const pick = (alphabet: string, length: number): string => {
+    let out = '';
+    for (let i = 0; i < length; i++) out += alphabet[Math.floor(rand() * alphabet.length)];
+    return out;
+  };
+  // PRNG mulberry32 : reproductible, aucune dépendance.
+  let state = 0x9e3779b9;
+  const rand = (): number => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  const samples: string[] = [];
+  for (let i = 0; i < 2000; i++) samples.push('sk-or-v1-' + pick(HEX, 64));
+  for (let i = 0; i < 2000; i++) samples.push('sk-or-v1-' + pick(B64, 32 + Math.floor(rand() * 33)));
+  for (let i = 0; i < 2000; i++) samples.push(pick(ALNUM, 20 + Math.floor(rand() * 81)));
+
+  const rejected = samples.filter((s) => !openRouterKeyStatus(s).ok);
+  assert.equal(rejected.length, 0, `rejets à tort (${rejected.length}) : ${rejected.slice(0, 3).map((s) => JSON.stringify(s.slice(0, 32))).join(', ')}`);
+});
+
 // ---------- 2. messages français exacts ----------
 
 const MESSAGE_CASES: { name: string; err: unknown; expected: string }[] = [

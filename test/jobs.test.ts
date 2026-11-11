@@ -66,7 +66,9 @@ test('le message de progression décrit le morceau en cours (français)', async 
   const registry = createJobRegistry(pipeline);
   const job = registry.createJob(input);
   await until(() => registry.getJob(job.id)!.doneChunks === 2);
-  assert.equal(registry.getJob(job.id)!.message, 'Transcription du morceau 2 sur 5…');
+  // 2 morceaux DÉJÀ terminés ⇒ c'est le 3e qui est en cours : l'intitulé est
+  // désormais en base 1 (« morceau en cours »), d'où 3 et non 2.
+  assert.equal(registry.getJob(job.id)!.message, 'Transcription du morceau 3 sur 5…');
   release();
   await until(() => registry.getJob(job.id)!.status === 'done');
 });

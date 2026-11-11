@@ -1166,11 +1166,13 @@
           els.stepProgress.hidden = false;
           els.status.textContent = job.message || 'Traitement…';
 
-          // Le découpage (nombre de morceaux inconnu au départ) reste
-          // indéterminé : seule la transcription alimente la barre, ce qui
-          // évite tout retour en arrière (le découpage émet total=total).
-          if (job.phase === 'transcribing' && job.totalChunks > 0) {
-            setProgress((job.doneChunks / job.totalChunks) * 100);
+          // Le découpage (nombre de morceaux inconnu au départ) ET le premier
+          // morceau restent indéterminés : un morceau pas encore terminé ne doit
+          // pas figer la barre à 0 %. Ensuite la barre suit la progression ; elle
+          // n'atteint 100 % qu'à la fin (`status === 'done'`), donc jamais
+          // pendant la transcription (dernier morceau = 99 %).
+          if (job.phase === 'transcribing' && job.totalChunks > 0 && job.doneChunks > 0) {
+            setProgress(Math.min(99, (job.doneChunks / job.totalChunks) * 100));
           } else {
             setProgress(null);
           }

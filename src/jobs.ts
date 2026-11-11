@@ -112,8 +112,12 @@ function messageFor(job: Job): string {
   switch (job.phase) {
     case 'chunking':
       return job.totalChunks > 0 ? 'Découpage du fichier terminé.' : 'Découpage du fichier…';
-    case 'transcribing':
-      return `Transcription du morceau ${job.doneChunks} sur ${job.totalChunks}…`;
+    case 'transcribing': {
+      // Morceau EN COURS, en base 1 : `doneChunks` compte les morceaux TERMINÉS,
+      // donc le premier morceau lit « morceau 1 sur N… » et le dernier « N sur N… ».
+      const cur = Math.min(job.doneChunks + 1, job.totalChunks);
+      return `Transcription du morceau ${cur} sur ${job.totalChunks}…`;
+    }
     case 'chaptering':
       return 'Recherche des chapitres…';
     case 'persisting':

@@ -26,8 +26,16 @@ export type OpenRouterKeyStatus = { ok: boolean; reason?: OpenRouterKeyReason };
  * Motifs d'exemple évidents. Volontairement restreints à des lettres absentes
  * d'une clé hexadécimale (`votre`, `your`, `change`, `todo`…) ou à une suite de
  * points, pour ne jamais rejeter une vraie clé au hasard.
+ *
+ * Le mot-clé doit être un JETON — entouré de non-alphanumériques (ou aux bords) :
+ * sans cette contrainte, une clé aléatoire était refusée à tort (`xxx` apparaît
+ * par hasard dans une suite base64 : un fuzz de 6 000 clés réalistes a produit
+ * 8 rejets, tous dus à `xxx`). Avec la contrainte, un bloc hexadécimal, base64 ou
+ * alphanumérique ne peut plus correspondre, tout en gardant les exemples
+ * documentés (`sk-votre-cle-…`, `CHANGE_ME_…`, `sk-xxx-…`).
  */
-const PLACEHOLDER_PATTERNS = /\.\.\.|…|votre|your|change|remplace|replace|exemple|example|placeholder|todo|xxx/i;
+const PLACEHOLDER_PATTERN =
+  /(?:^|[^A-Za-z0-9])(votre|your|change|remplace|replace|exemple|example|placeholder|todo|xxx)(?:$|[^A-Za-z0-9])/i;
 
 /**
  * Verdict pour une valeur de clé (par défaut : `OPENROUTER_API_KEY`).
@@ -38,7 +46,12 @@ const PLACEHOLDER_PATTERNS = /\.\.\.|…|votre|your|change|remplace|replace|exem
 export function openRouterKeyStatus(raw: string | undefined = process.env[OPENROUTER_KEY_ENV]): OpenRouterKeyStatus {
   const value = typeof raw === 'string' ? raw.trim() : '';
   if (!value) return { ok: false, reason: 'missing' };
-  if (value.length < MIN_OPENROUTER_KEY_LENGTH || PLACEHOLDER_PATTERNS.test(value)) {
+  if (
+    value.length < MIN_OPENROUTER_KEY_LENGTH ||
+    value.includes('...') ||
+    value.includes('…') ||
+    PLACEHOLDER_PATTERN.test(value)
+  ) {
     return { ok: false, reason: 'placeholder' };
   }
   return { ok: true };

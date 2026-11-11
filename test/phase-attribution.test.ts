@@ -8,10 +8,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateLocalChapters } from '../src/local-chapters.ts';
+import { MEDIA_UNREADABLE_MESSAGE } from '../src/media-check.ts';
 import {
   createJobRegistry,
   OPENROUTER_KEY_MISSING_MESSAGE,
@@ -176,4 +177,70 @@ test('chemin nominal (36 morceaux) : progression monotone jusqu’au total, gard
   assert.equal(result.chapters.length, 1, 'garde de densité appliquée');
   assert.equal(result.chapters[0].title, 'Introduction');
   assert.ok(result.durationSec > 70 && result.durationSec < 74, `durée inattendue : ${result.durationSec}`);
+});
+
+test('clé absente ou restée à l’exemple : échec AVANT toute requête réseau', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'ytc-phase-nonet-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const src = await sine(dir, 7);
+
+  const previousKey = process.env.OPENROUTER_API_KEY;
+  let calls = 0;
+  // Toute requête ferait ÉCHOUER ce test : la clé non configurée ne doit jamais
+  // atteindre le réseau (ni OpenRouter, ni quoi que ce soit d'autre).
+  const restore = stubFetch(async () => {
+    calls++;
+    return new Response('requête inattendue', { status: 500 });
+  });
+  t.after(() => {
+    restore();
+    if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previousKey;
+  });
+
+  for (const key of [undefined, '', 'sk-...', 'sk-votre-cle-openrouter-ici', 'trop-court']) {
+    if (key === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = key;
+    await assert.rejects(
+      () => generateLocalChapters(src, { chunkSec: 3 }),
+      /OPENROUTER_API_KEY/,
+      `clé ${JSON.stringify(key)} : échec attendu avant tout appel`,
+    );
+  }
+  assert.equal(calls, 0, 'aucune requête réseau ne doit partir sans clé configurée');
+});
+
+test('un échec du découpage est attribué à « chunking », jamais à « transcribing »', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'ytc-chunkfail-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const src = join(dir, 'pas-un-media.mp3');
+  await writeFile(src, 'ceci n’est pas de l’audio');
+
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls++;
+    return new Response('requête inattendue', { status: 500 });
+  });
+  t.after(restore);
+
+  const phases: string[] = [];
+  const traces: JobFailure[] = [];
+  const pipeline: JobPipeline = async (input, ctx) => {
+    const seen = (e: ProgressEvent) => {
+      phases.push(e.phase);
+      ctx.onProgress(e);
+    };
+    return realPipeline(input, { ...ctx, onProgress: seen });
+  };
+  const registry = createJobRegistry(pipeline, { logger: (f) => traces.push(f) });
+  const job = registry.createJob({ path: src, chunkSec: 3 });
+  await until(() => registry.getJob(job.id)!.status === 'error');
+  const failed = registry.getJob(job.id)!;
+
+  assert.equal(failed.phase, 'chunking');
+  assert.ok(!phases.includes('transcribing'), 'aucun signalement « transcribing » attendu');
+  assert.equal(traces.length, 1);
+  assert.equal(traces[0].phase, 'chunking', 'la trace serveur porte la phase réelle');
+  assert.equal(failed.message, MEDIA_UNREADABLE_MESSAGE);
+  assert.equal(calls, 0, 'un échec de découpage ne fait aucun appel réseau');
 });
