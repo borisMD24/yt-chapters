@@ -86,21 +86,33 @@ function messageFor(job: Job): string {
 
 /**
  * Retire tout secret (clés OpenRouter, tokens Bearer) ET tout chemin de fichier
- * absolu (lecteur Windows `C:\…`, UNC `\\serveur\partage\…`, POSIX des racines
- * usuelles) d'un message d'erreur destiné au navigateur.
+ * absolu des messages d'erreur destinés au navigateur.
  *
- * Les chemins sont consommés jusqu'à un terminateur (fin de ligne, `:`, `(`,
- * `)`, `"`, `'`) **espaces compris** : sinon un dossier comme « Mes documents »
- * ferait fuiter la fin du chemin. La règle POSIX est limitée aux racines
- * connues pour ne pas abîmer un texte courant comme `12/03/2024`.
+ * Règles : lecteur Windows (`C:\…`, espaces et délimiteurs `( ) ' " :` compris
+ * DANS le chemin), UNC (`\\serveur\partage\…`) et POSIX limité aux racines
+ * usuelles (`home|Users|media|Volumes|mnt|tmp|opt|root|srv|var|data|usr`, pour
+ * ne pas abîmer une date comme `12/03/2024`). Un chemin est consommé jusqu'à
+ * un terminateur : `:`, fin de ligne, ou début d'un autre chemin — jamais un
+ * simple espace, sinon « Mes documents » ferait fuiter la fin du chemin.
+ *
+ * Défensif et cosmétique pour un outil local mono-utilisateur : ce n'est PAS
+ * une frontière de sécurité. Compromis assumés :
+ *  - la queue d'un chemin étendu `\\?\C:\…` peut survivre (la règle UNC
+ *    s'arrête au `:`) ;
+ *  - du texte suivant un chemin sur la même ligne peut être sur-nettoyé
+ *    (le chemin va jusqu'à la fin de ligne faute de terminateur explicite).
  */
 export function sanitizeErrorMessage(message: string): string {
+  // Terminateur partagé : `:`, fin de ligne, ou un autre chemin qui commence.
   return message
     .replace(/sk-[A-Za-z0-9_-]{6,}/g, 'sk-***')
     .replace(/Bearer\s+[A-Za-z0-9._-]{6,}/gi, 'Bearer ***')
-    .replace(/\\\\[^:"'()\n]*/g, '<chemin>')
-    .replace(/[A-Za-z]:\\[^:"'()\n]*/g, '<chemin>')
-    .replace(/\/(?:home|Users|tmp|mnt|var|opt)\/[^:"'()\n]*/g, '<chemin>')
+    .replace(/\\\\[^:\n]*?(?=:|$|\n|\s+(?:[A-Za-z]:\\|\\\\|\/))/g, '<chemin>')
+    .replace(/[A-Za-z]:\\[^:\n]*?(?=:|$|\n|\s+(?:[A-Za-z]:\\|\\\\|\/))/g, '<chemin>')
+    .replace(
+      /\/(?:home|Users|media|Volumes|mnt|tmp|opt|root|srv|var|data|usr)\/[^:\n]*?(?=:|$|\n|\s+(?:[A-Za-z]:\\|\\\\|\/))/g,
+      '<chemin>',
+    )
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 400);
