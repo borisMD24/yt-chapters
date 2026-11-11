@@ -21,6 +21,26 @@ Génère des chapitres YouTube à partir :
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | base OpenRouter |
 | `DB_PATH` | `data/chapters.db` | base SQLite |
 | `PORT` | `3000` | port HTTP |
+| `MEDIA_DIR` | deux niveaux au-dessus du projet | dossier scanné par l'interface (fichiers audio/vidéo) |
+
+## Utiliser l'interface (sans ligne de commande)
+
+1. Démarrez le serveur : `npm start` (le port par défaut est `3000`).
+2. Ouvrez <http://localhost:3000/> dans un navigateur.
+3. Choisissez un fichier de votre dossier de médias, cliquez sur
+   **Générer les chapitres**, suivez la progression, puis cliquez sur
+   **Copier pour YouTube** et collez le texte dans la description de la vidéo.
+
+La page liste automatiquement les fichiers du dossier `MEDIA_DIR` (si la
+variable est absente, le dossier situé deux niveaux au-dessus du projet).
+Elle fonctionne hors-ligne : aucun CDN, aucune police externe, aucun build.
+
+- Progression suivie côté navigateur (`GET /local/jobs/:id`, sondage ~1 s),
+  bouton **Annuler** (`DELETE /local/jobs/:id`).
+- Résultat copiable, téléchargeable en `.txt`, avec les avertissements YouTube
+  en clair (ex. « Il faudrait au moins 3 chapitres »).
+- « Derniers chapitrages » reprend les générations locales récentes.
+
 
 ## API
 
@@ -30,6 +50,14 @@ Génère des chapitres YouTube à partir :
 - `POST /local/chapters` — `{ path, chunkSec?, lang?, maxChunks? }` → `{ chapters, text, warnings }`.
   Persiste une ligne `videos` (id synthétique `local:<sha1 du chemin absolu, 16 hex>`)
   et les chapitres générés (`source = llm`) dans une transaction.
+- `GET /` — page d'interface (HTML autonome, en français).
+- `GET /local/media` — fichiers audio/vidéo de `MEDIA_DIR` (`{ dir, files, hint? }`).
+- `POST /local/jobs` — démarre un job (`202 { jobId }`) ; le chemin doit être un
+  fichier de `MEDIA_DIR` (sinon `400`/`404`).
+- `GET /local/jobs/:id` — état du job (`queued|running|done|error|cancelled`,
+  phase, progression, message en français, `result`).
+- `DELETE /local/jobs/:id` — annule le job.
+- `GET /local/history` — derniers chapitrages locaux (id, titre, nb de chapitres, date).
 - `GET /videos/:id/export` — description au format YouTube + avertissements
 
 ## CLI (média local)
