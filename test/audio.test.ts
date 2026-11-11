@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeChunkOffsets, probeDurationSec, chunkToMp3, MIN_CHUNK_SEC } from '../src/audio.ts';
+import { computeChunkOffsets, probeDurationSec, chunkToMp3, MIN_CHUNK_SEC, sweepStaleChunkDirs } from '../src/audio.ts';
 
 const run = promisify(execFile);
 
@@ -113,6 +113,29 @@ test('chunkToMp3 refuse un chunkSec inférieur à MIN_CHUNK_SEC', async (t) => {
   } finally {
     await ok.cleanup();
   }
+});
+
+test('sweepStaleChunkDirs : supprime les dossiers périmés, épargne les frais et les autres', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'ytc-sweep-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stale = join(root, 'ytc-chunks-abandonne');
+  const fresh = join(root, 'ytc-chunks-en-cours');
+  const other = join(root, 'autre-dossier');
+  await mkdir(stale);
+  await mkdir(fresh);
+  await mkdir(other);
+  // Un process tué laisse son dossier derrière lui : mtime vieux de 2 h.
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  await utimes(stale, twoHoursAgo, twoHoursAgo);
+
+  const removed = await sweepStaleChunkDirs(root);
+  assert.deepEqual(removed, [stale]);
+  const left = (await readdir(root)).sort();
+  assert.deepEqual(left, ['autre-dossier', 'ytc-chunks-en-cours']);
+});
+
+test('sweepStaleChunkDirs : racine absente = échec silencieux (ne casse jamais le run)', async () => {
+  assert.deepEqual(await sweepStaleChunkDirs(join(tmpdir(), 'ytc-sweep-inexistant-xyz')), []);
 });
 
 test('INTEGRATION: maxChunks borne le nombre de chunks produits', async (t) => {

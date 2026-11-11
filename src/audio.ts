@@ -58,6 +58,42 @@ export async function probeDurationSec(file: string): Promise<number> {
 
 export type ChunkResult = { dir: string; chunks: Chunk[]; cleanup: () => Promise<void> };
 
+/** Préfixe des dossiers temporaires de découpage, dans `tmpdir()`. */
+const TMP_PREFIX = 'ytc-chunks-';
+/** Âge au-delà duquel un dossier de chunks est considéré abandonné. */
+const STALE_CHUNK_MS = 60 * 60 * 1000;
+
+/**
+ * Supprime au mieux les dossiers `<tmpRoot>/ytc-chunks-*` de plus d'une heure :
+ * un process tué (ou un run avorté) laisse sinon ses chunks derrière lui.
+ * Un dossier plus récent peut appartenir à une session concurrente en cours et
+ * n'est JAMAIS touché. Toute erreur (racine absente, dossier verrouillé) est
+ * ignorée : ce nettoyage ne doit jamais faire échouer un run.
+ * Renvoie les chemins supprimés (utile aux tests).
+ */
+export async function sweepStaleChunkDirs(tmpRoot: string = tmpdir(), now: number = Date.now()): Promise<string[]> {
+  const removed: string[] = [];
+  try {
+    const entries = await readdir(tmpRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(TMP_PREFIX)) continue;
+      const full = join(tmpRoot, entry.name);
+      try {
+        const st = await stat(full);
+        if (now - st.mtimeMs > STALE_CHUNK_MS) {
+          await rm(full, { recursive: true, force: true });
+          removed.push(full);
+        }
+      } catch {
+        /* dossier disparu ou verrouillé : on passe */
+      }
+    }
+  } catch {
+    /* racine illisible : on passe */
+  }
+  return removed;
+}
+
 /**
  * Coupe `input` en chunks mp3 de `chunkSec` secondes dans un dossier temporaire.
  * `maxChunks` borne le nombre de chunks (utile pour des runs de validation courts) :
@@ -78,7 +114,10 @@ export async function chunkToMp3(
   if (!Number.isFinite(chunkSec) || chunkSec < MIN_CHUNK_SEC) {
     throw new Error(`durée de chunk invalide : ${chunkSec}s (minimum ${MIN_CHUNK_SEC}s)`);
   }
-  const dir = await mkdtemp(join(tmpdir(), 'ytc-chunks-'));
+  // Nettoyage best-effort des dossiers abandonnés par un process tué (jamais les
+  // dossiers frais : une session concurrente peut être en train d'écrire dedans).
+  await sweepStaleChunkDirs();
+  const dir = await mkdtemp(join(tmpdir(), TMP_PREFIX));
   const cleanup = () => rm(dir, { recursive: true, force: true });
 
   try {

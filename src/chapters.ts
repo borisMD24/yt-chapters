@@ -143,17 +143,55 @@ export function extractJsonObject(raw: string): string | null {
   return null;
 }
 
+/** Extrait le DERNIER bloc {...} équilibré (la réponse finale d'un scratchpad vient en dernier). */
+export function extractLastJsonObject(raw: string): string | null {
+  let last: string | null = null;
+  let start = -1;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (c === '}' && depth > 0) {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        last = raw.slice(start, i + 1);
+        start = -1;
+      }
+    }
+  }
+  return last;
+}
+
 /**
- * Parse défensivement la réponse du LLM : extrait le premier objet JSON, valide
- * avec zod et ignore les items invalides.
- * Renvoie `null` si aucun objet JSON de chapitres n'est exploitable (réponse
- * hors-sujet, JSON tronqué, `[0]`…) — à distinguer d'un résultat valide vide
- * `{"chapters":[]}` qui, lui, est un vrai résultat.
- * Un tableau NON VIDE dont aucun item n'est exploitable (dérive de clés côté
- * provider) est lui aussi une réponse inexploitable, pas un résultat vide.
+ * Vrai quand le modèle a produit des chapitres mais qu'aucun n'est exploitable :
+ * soit aucun item ne valide (dérive de clés), soit `normalize` les élimine tous
+ * (tous les horodatages au-delà de `durationSec - MIN_GAP`). Un tableau vide
+ * légitime (`produced === 0`) n'est pas une anomalie : il renvoie false.
+ * Prédicat partagé par les deux étages de détection.
  */
-function analyzeChaptersJson(raw: string): Proposed[] | null {
-  const block = extractJsonObject(raw);
+function isUnusable(produced: number, usable: number): boolean {
+  return produced > 0 && usable === 0;
+}
+
+/**
+ * Chapitres bruts extraits d'un texte (sans normalize) : `null` si rien
+ * d'exploitable. `mode: 'last'` prend le DERNIER bloc JSON équilibré, ce qui est
+ * requis pour un scratchpad de raisonnement (l'exemple illustratif vient avant
+ * la réponse finale).
+ */
+function rawChapters(raw: string, mode: 'first' | 'last' = 'first'): Proposed[] | null {
+  const block = mode === 'last' ? extractLastJsonObject(raw) : extractJsonObject(raw);
   if (!block) return null;
   let parsed: unknown;
   try {
@@ -169,13 +207,33 @@ function analyzeChaptersJson(raw: string): Proposed[] | null {
     const one = toProposed(item);
     if (one) out.push(one);
   }
-  if (items.length > 0 && out.length === 0) return null;
+  if (isUnusable(items.length, out.length)) return null;
   return out;
 }
 
-/** Idem `analyzeChaptersJson` mais `[]` quand rien n'est exploitable. */
+/** Résultat d'analyse : liste finale (normalisée) + verdict d'exploitabilité. */
+export type ChapterAnalysis = { chapters: Proposed[]; usable: boolean };
+
+/**
+ * Analyse une réponse du LLM pour une durée connue : extraction tolérante aux
+ * alias, puis normalize. `usable: false` quand le modèle a produit des chapitres
+ * dont aucun ne survit (0 item valide, ou tous hors durée) — à distinguer d'un
+ * `{"chapters":[]}` légitime, qui reste `usable: true` avec 0 chapitre.
+ */
+export function analyzeChaptersJson(raw: string, durationSec: number, mode: 'first' | 'last' = 'first'): ChapterAnalysis {
+  const parsed = rawChapters(raw, mode);
+  if (!parsed) return { chapters: [], usable: false };
+  const chapters = normalize(parsed, durationSec);
+  if (isUnusable(parsed.length, chapters.length)) return { chapters: [], usable: false };
+  return { chapters, usable: true };
+}
+
+/**
+ * Idem extraction brute mais `[]` quand rien n'est exploitable (durée inconnue :
+ * pas de normalize).
+ */
 export function parseChaptersJson(raw: string): Proposed[] {
-  return analyzeChaptersJson(raw) ?? [];
+  return rawChapters(raw) ?? [];
 }
 
 export function normalize(items: Proposed[], durationSec: number): Proposed[] {
@@ -312,12 +370,16 @@ export async function proposeChapters(
   try {
     const first = await complete({ ...base, messages, response_format: JSON_SCHEMA_FORMAT });
     const firstMessage = first.choices?.[0]?.message;
-    const fromContent = analyzeChaptersJson(firstMessage?.content ?? '');
-    if (fromContent) return normalize(fromContent, meta.durationSec);
+    // `content` reste autoritaire dès qu'il est exploitable.
+    const fromContent = analyzeChaptersJson(firstMessage?.content ?? '', meta.durationSec);
+    if (fromContent.usable) return fromContent.chapters;
     // Forme documentée par la probe live : `content:"[0]"` avec le JSON réel dans
     // le `reasoning` du MÊME appel → exploité ici, sans payer un second appel.
-    const fromFirstReasoning = analyzeChaptersJson(firstMessage?.reasoning ?? '');
-    if (fromFirstReasoning) return normalize(fromFirstReasoning, meta.durationSec);
+    // Le scratchpad est lu en partant de la FIN : l'exemple illustratif vient
+    // avant la réponse finale. Un dernier objet sans chapitre exploitable est
+    // rejeté (on poursuit vers json_object).
+    const fromReasoning = analyzeChaptersJson(firstMessage?.reasoning ?? '', meta.durationSec, 'last');
+    if (fromReasoning.usable) return fromReasoning.chapters;
   } catch (err) {
     if (!shouldFallbackToJsonObject(err)) throw err;
     schemaError = err instanceof Error ? err.message : String(err);
@@ -329,12 +391,12 @@ export async function proposeChapters(
     response_format: { type: 'json_object' },
   });
   const message = second.choices?.[0]?.message;
-  const fromContent = analyzeChaptersJson(message?.content ?? '');
-  if (fromContent) return normalize(fromContent, meta.durationSec);
+  const fromSecondContent = analyzeChaptersJson(message?.content ?? '', meta.durationSec);
+  if (fromSecondContent.usable) return fromSecondContent.chapters;
   // Dernier recours : certains modèles (raisonneurs) déposent le JSON réel dans
-  // `reasoning` en laissant `content` inutilisable.
-  const fromReasoning = analyzeChaptersJson(message?.reasoning ?? '');
-  if (fromReasoning) return normalize(fromReasoning, meta.durationSec);
+  // `reasoning` en laissant `content` inutilisable (même lecture depuis la fin).
+  const fromSecondReasoning = analyzeChaptersJson(message?.reasoning ?? '', meta.durationSec, 'last');
+  if (fromSecondReasoning.usable) return fromSecondReasoning.chapters;
 
   throw new UnusableChapterOutputError(
     `aucun objet JSON de chapitres extractible (model ${LLM_MODEL}` +

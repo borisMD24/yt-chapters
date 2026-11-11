@@ -7,6 +7,7 @@ import {
   chaptersToText,
   normalize,
   extractJsonObject,
+  extractLastJsonObject,
   proposeChapters,
   shouldFallbackToJsonObject,
   UnusableChapterOutputError,
@@ -256,6 +257,71 @@ test('proposeChapters : reasoning du PREMIER appel exploité sans second appel p
   const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
   assert.deepEqual(out, [{ startSec: 0, title: 'Depuis reasoning' }]);
   assert.deepEqual(formats, ['json_schema']); // un seul appel
+});
+
+test('extractLastJsonObject : prend le dernier bloc équilibré du scratchpad', () => {
+  const raw =
+    'Je réfléchis… exemple : {"chapters":[{"startSec":0,"title":"EXEMPLE"}]} … réponse finale : {"chapters":[{"startSec":0,"title":"VRAI"}]} voilà';
+  assert.equal(extractLastJsonObject(raw), '{"chapters":[{"startSec":0,"title":"VRAI"}]}');
+  // `extractJsonObject` (first) reste inchangé : c'est bien lui qui exposait l'exemple.
+  assert.equal(extractJsonObject(raw), '{"chapters":[{"startSec":0,"title":"EXEMPLE"}]}');
+  assert.equal(extractLastJsonObject('pas de json'), null);
+  assert.equal(extractLastJsonObject('{"a":{"b":1}}'), '{"a":{"b":1}}');
+});
+
+test('proposeChapters : scratchpad = exemple puis vraie réponse → la vraie réponse gagne', async () => {
+  const scratchpad =
+    'Brouillon. Exemple de forme : {"chapters":[{"startSec":0,"title":"EXEMPLE"}]} ' +
+    'Réponse finale : {"chapters":[{"startSec":0,"title":"Intro"},{"startSec":420,"title":"Suite"}]}';
+  const { complete, formats } = recorder([msg('[0]', scratchpad)]);
+  const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
+  assert.deepEqual(
+    out.map((c) => c.title),
+    ['Intro', 'Suite'],
+  );
+  assert.deepEqual(formats, ['json_schema']); // toujours un seul appel
+});
+
+test('proposeChapters : scratchpad ne contenant qu’un exemple inexploitable → repli json_object', async () => {
+  // Un exemple de *forme* (placeholders) ne valide pas : on ne doit pas le
+  // prendre pour la réponse, mais poursuivre le repli.
+  const onlyExample = 'Exemple : {"chapters":[{"start_sec":"<secondes>","title":"<titre>"}]}';
+  const { complete, formats } = recorder([msg('[0]', onlyExample), msg('{"chapters":[{"startSec":0,"title":"Vraie réponse"}]}')]);
+  const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
+  assert.deepEqual(out, [{ startSec: 0, title: 'Vraie réponse' }]);
+  assert.deepEqual(formats, ['json_schema', 'json_object']);
+});
+
+test('proposeChapters : un `content` exploitable n’est jamais écrasé par `reasoning`', async () => {
+  const { complete, formats } = recorder([
+    msg('{"chapters":[{"startSec":0,"title":"Contenu"}]}', '{"chapters":[{"startSec":0,"title":"REASONING"}]}'),
+  ]);
+  const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
+  assert.deepEqual(out, [{ startSec: 0, title: 'Contenu' }]);
+  assert.deepEqual(formats, ['json_schema']);
+});
+
+test('proposeChapters : chapitres tous hors durée = inexploitable (repli puis erreur)', async () => {
+  // Classe observée : tous les horodatages au-delà de durationSec - MIN_GAP →
+  // normalize renvoie [] et le pipeline publiait une liste vide sans erreur.
+  const beyond = '{"chapters":[{"startSec":700,"title":"Trop tard"},{"startSec":800,"title":"Encore trop tard"}]}';
+  const { complete, formats } = recorder([msg(beyond), msg(beyond)]);
+  await assert.rejects(
+    () => proposeChapters({ title: 'T', durationSec: 600 }, [], { complete }),
+    UnusableChapterOutputError,
+  );
+  assert.deepEqual(formats, ['json_schema', 'json_object']);
+});
+
+test('proposeChapters : contenu hors durée mais repli exploitable → chapitres du repli', async () => {
+  const beyond = '{"chapters":[{"startSec":700,"title":"Trop tard"}]}';
+  const { complete, formats } = recorder([msg(beyond), msg('{"chapters":[{"startSec":0,"title":"Valide"},{"startSec":300,"title":"Suite"}]}')]);
+  const out = await proposeChapters({ title: 'T', durationSec: 600 }, [], { complete });
+  assert.deepEqual(
+    out.map((c) => c.title),
+    ['Valide', 'Suite'],
+  );
+  assert.deepEqual(formats, ['json_schema', 'json_object']);
 });
 
 test('proposeChapters : dernier recours = JSON trouvé dans reasoning', async () => {
