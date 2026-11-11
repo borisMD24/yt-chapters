@@ -9,6 +9,7 @@ import {
   extractJsonObject,
   extractLastJsonObject,
   proposeChapters,
+  analyzeChaptersJson,
   shouldFallbackToJsonObject,
   UnusableChapterOutputError,
   type ChatCompletionLike,
@@ -290,6 +291,56 @@ test('proposeChapters : scratchpad ne contenant qu’un exemple inexploitable �
   const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
   assert.deepEqual(out, [{ startSec: 0, title: 'Vraie réponse' }]);
   assert.deepEqual(formats, ['json_schema', 'json_object']);
+});
+
+test('proposeChapters : reasoning = vraie réponse puis {"chapters":[]} → la vraie réponse gagne', async () => {
+  const scratchpad =
+    'Réponse finale : {"chapters":[{"startSec":0,"title":"Intro"},{"startSec":420,"title":"Suite"}]} puis {"chapters":[]}';
+  const { complete, formats } = recorder([msg('[0]', scratchpad)]);
+  const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
+  assert.deepEqual(
+    out.map((c) => c.title),
+    ['Intro', 'Suite'],
+  );
+  assert.deepEqual(formats, ['json_schema']); // un seul appel, et jamais []
+});
+
+test('proposeChapters : reasoning = seulement {"chapters":[]} → inexploitable, repli puis erreur', async () => {
+  const { complete, formats } = recorder([msg('[0]', '{"chapters":[]}'), msg('[0]', '{"chapters":[]}')]);
+  await assert.rejects(
+    () => proposeChapters({ title: 'T', durationSec: 600 }, [], { complete }),
+    UnusableChapterOutputError,
+  );
+  assert.deepEqual(formats, ['json_schema', 'json_object']);
+});
+
+test('proposeChapters : reasoning = [chapitres, métadonnées] → les chapitres gagnent', async () => {
+  // Un élément de métadonnées en fin de tableau ne doit pas masquer la réponse.
+  const scratchpad =
+    '[{"chapters":[{"startSec":0,"title":"Intro"},{"startSec":300,"title":"Suite"}]},{"meta":{"note":"done"}}]';
+  const { complete, formats } = recorder([msg('[0]', scratchpad)]);
+  const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
+  assert.deepEqual(
+    out.map((c) => c.title),
+    ['Intro', 'Suite'],
+  );
+  assert.deepEqual(formats, ['json_schema']);
+});
+
+test("analyzeChaptersJson : mode 'first' inchangé, mode 'last' balaie depuis la fin", () => {
+  // 'first' (défaut) : le PREMIER objet fait foi, même s'il est vide ou inexploitable.
+  assert.deepEqual(analyzeChaptersJson('{"chapters":[]}', 600), { chapters: [], usable: true });
+  assert.deepEqual(
+    analyzeChaptersJson('exemple {"chapters":[{"startSec":0,"title":"E"}]} fin {"chapters":[]}', 600).chapters.map((c) => c.title),
+    ['E'],
+  );
+  assert.equal(analyzeChaptersJson('{"meta":1} {"chapters":[{"startSec":0,"title":"A"}]}', 600).usable, false);
+  // 'last' : on remonte jusqu'au dernier candidat réellement exploitable.
+  const last = analyzeChaptersJson('{"meta":1} {"chapters":[{"startSec":0,"title":"A"}]}', 600, 'last');
+  assert.equal(last.usable, true);
+  assert.deepEqual(last.chapters.map((c) => c.title), ['A']);
+  // Aucun candidat exploitable → inexploitable (jamais un [] silencieux).
+  assert.deepEqual(analyzeChaptersJson('{"chapters":[]}', 600, 'last'), { chapters: [], usable: false });
 });
 
 test('proposeChapters : un `content` exploitable n’est jamais écrasé par `reasoning`', async () => {

@@ -143,9 +143,9 @@ export function extractJsonObject(raw: string): string | null {
   return null;
 }
 
-/** Extrait le DERNIER bloc {...} équilibré (la réponse finale d'un scratchpad vient en dernier). */
-export function extractLastJsonObject(raw: string): string | null {
-  let last: string | null = null;
+/** Tous les blocs {...} équilibrés d'un texte, dans l'ordre d'apparition. */
+export function extractJsonObjects(raw: string): string[] {
+  const out: string[] = [];
   let start = -1;
   let depth = 0;
   let inStr = false;
@@ -165,12 +165,24 @@ export function extractLastJsonObject(raw: string): string | null {
     } else if (c === '}' && depth > 0) {
       depth--;
       if (depth === 0 && start !== -1) {
-        last = raw.slice(start, i + 1);
+        out.push(raw.slice(start, i + 1));
         start = -1;
       }
     }
   }
-  return last;
+  return out;
+}
+
+/**
+ * Extrait le DERNIER bloc {...} équilibré (la réponse finale d'un scratchpad vient
+ * souvent en dernier). Attention : un objet vide (`{"chapters":[]}`) ou de simples
+ * métadonnées peut suivre la vraie réponse → pour sélectionner un payload de
+ * chapitres, passer par `lastUsableChapters` (mode 'last' de `rawChapters`), qui
+ * remonte jusqu'au dernier candidat réellement exploitable.
+ */
+export function extractLastJsonObject(raw: string): string | null {
+  const all = extractJsonObjects(raw);
+  return all.length ? all[all.length - 1] : null;
 }
 
 /**
@@ -185,13 +197,37 @@ function isUnusable(produced: number, usable: number): boolean {
 }
 
 /**
+ * Balaie les candidats JSON d'un scratchpad DEPUIS LA FIN et renvoie le dernier
+ * réellement exploitable (enveloppe `chapters` non vide + au moins un item
+ * valide). On ne s'arrête donc pas au seul dernier bloc : `{"chapters":[]}` ou un
+ * objet de métadonnées en fin de scratchpad ne doit pas masquer la vraie réponse
+ * ni produire une liste vide silencieuse. `null` si aucun candidat n'est
+ * exploitable → l'appelant poursuit le repli habituel.
+ *
+ * Risque résiduel assumé (non décidable par heuristique) : si le scratchpad se
+ * termine par un EXEMPLE valide en apparence (items de chapitres valides) APRÈS
+ * la vraie réponse, c'est l'exemple qui est retenu.
+ */
+function lastUsableChapters(raw: string): Proposed[] | null {
+  const candidates = extractJsonObjects(raw);
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const parsed = rawChapters(candidates[i]);
+    if (parsed && parsed.length > 0) return parsed;
+  }
+  return null;
+}
+
+/**
  * Chapitres bruts extraits d'un texte (sans normalize) : `null` si rien
- * d'exploitable. `mode: 'last'` prend le DERNIER bloc JSON équilibré, ce qui est
- * requis pour un scratchpad de raisonnement (l'exemple illustratif vient avant
- * la réponse finale).
+ * d'exploitable.
+ * - `mode: 'first'` (défaut, comportement historique) : le PREMIER objet fait foi.
+ * - `mode: 'last'` : dernier candidat exploitable en remontant depuis la fin
+ *   (scratchpad de raisonnement : l'exemple illustratif précède la réponse, un
+ *   objet vide ou de métadonnées peut la suivre).
  */
 function rawChapters(raw: string, mode: 'first' | 'last' = 'first'): Proposed[] | null {
-  const block = mode === 'last' ? extractLastJsonObject(raw) : extractJsonObject(raw);
+  if (mode === 'last') return lastUsableChapters(raw);
+  const block = extractJsonObject(raw);
   if (!block) return null;
   let parsed: unknown;
   try {
