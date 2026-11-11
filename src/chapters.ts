@@ -8,7 +8,16 @@ export const LLM_MODEL = process.env.OPENROUTER_MODEL ?? 'qwen/qwen3.5-27b';
 // Client créé paresseusement : évite d'exiger une clé tant qu'aucun chapitre n'est demandé.
 let client: OpenAI | null = null;
 function getClient(): OpenAI {
-  client ??= new OpenAI({ apiKey: process.env.OPENROUTER_API_KEY, baseURL: BASE_URL });
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    // Sans ce garde-fou, le SDK retombe sur OPENAI_API_KEY et l'erreur nomme
+    // la mauvaise variable (diagnostic trompeur).
+    throw new Error(
+      "OPENROUTER_API_KEY manquante : renseigne la clé OpenRouter dans l'environnement " +
+        "(le SDK retomberait sinon sur OPENAI_API_KEY, d'où une erreur trompeuse).",
+    );
+  }
+  client ??= new OpenAI({ apiKey, baseURL: BASE_URL });
   return client;
 }
 
@@ -67,8 +76,16 @@ const ProposedSchema = z.object({
 });
 const ChaptersSchema = z.object({ chapters: z.array(z.unknown()) });
 
+/** Erreur métier : la réponse du modèle ne contient aucun JSON de chapitres exploitable. */
+export class UnusableChapterOutputError extends Error {
+  constructor(detail: string) {
+    super(`Réponse du modèle inexploitable : ${detail}`);
+    this.name = 'UnusableChapterOutputError';
+  }
+}
+
 /** Extrait le premier bloc {...} équilibré (ignore les accolades dans les chaînes). */
-function extractJsonObject(raw: string): string | null {
+export function extractJsonObject(raw: string): string | null {
   const start = raw.indexOf('{');
   if (start === -1) return null;
   let depth = 0;
@@ -94,19 +111,22 @@ function extractJsonObject(raw: string): string | null {
 
 /**
  * Parse défensivement la réponse du LLM : extrait le premier objet JSON, valide
- * avec zod et ignore les items invalides. Renvoie [] si rien d'exploitable.
+ * avec zod et ignore les items invalides.
+ * Renvoie `null` si aucun objet JSON de chapitres n'est exploitable (réponse
+ * hors-sujet, JSON tronqué, `[0]`…) — à distinguer d'un résultat valide vide
+ * `{"chapters":[]}` qui, lui, est un vrai résultat.
  */
-export function parseChaptersJson(raw: string): Proposed[] {
+function analyzeChaptersJson(raw: string): Proposed[] | null {
   const block = extractJsonObject(raw);
-  if (!block) return [];
+  if (!block) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(block);
   } catch {
-    return [];
+    return null;
   }
   const shape = ChaptersSchema.safeParse(parsed);
-  if (!shape.success) return [];
+  if (!shape.success) return null;
   const out: Proposed[] = [];
   for (const item of shape.data.chapters) {
     const one = ProposedSchema.safeParse(item);
@@ -114,6 +134,11 @@ export function parseChaptersJson(raw: string): Proposed[] {
     out.push({ startSec: one.data.startSec, title: one.data.title.trim() });
   }
   return out;
+}
+
+/** Idem `analyzeChaptersJson` mais `[]` quand rien n'est exploitable. */
+export function parseChaptersJson(raw: string): Proposed[] {
+  return analyzeChaptersJson(raw) ?? [];
 }
 
 export function normalize(items: Proposed[], durationSec: number): Proposed[] {
@@ -156,17 +181,65 @@ export function buildWarnings(
   return warnings;
 }
 
+/** Forme minimale d'une réponse de complétion (SDK OpenAI ou faux client de test). */
+export type ChatCompletionLike = {
+  choices?: { message?: { content?: string | null; reasoning?: string | null } }[];
+};
+
+/** Corps de requête réellement envoyé au provider (injectable en test). */
+export type ChaptersRequest = {
+  model: string;
+  temperature: number;
+  messages: OpenAI.Chat.ChatCompletionMessageParam[];
+  response_format: ResponseFormat;
+};
+
+type ResponseFormat = NonNullable<OpenAI.Chat.ChatCompletionCreateParamsNonStreaming['response_format']>;
+
+export type ChaptersCompleter = (req: ChaptersRequest) => Promise<ChatCompletionLike>;
+
+/** Format demandé en premier choix : JSON strict garanti par le provider. */
+const JSON_SCHEMA_FORMAT = {
+  type: 'json_schema',
+  json_schema: { name: 'chapters', strict: true, schema: CHAPTERS_SCHEMA },
+} as const satisfies ResponseFormat;
+
+const SCHEMA_HINT: OpenAI.Chat.ChatCompletionMessageParam = {
+  role: 'system',
+  content: `Réponds avec un unique objet JSON conforme à ce schéma : ${JSON.stringify(CHAPTERS_SCHEMA)}`,
+};
+
+/**
+ * Vrai seulement si l'erreur signifie que le provider ne supporte pas le
+ * `response_format` demandé (400/404/422). Les erreurs d'auth, de quota, de
+ * serveur ou de réseau ne justifient PAS un second appel facturé : elles doivent
+ * remonter telles quelles.
+ */
+export function shouldFallbackToJsonObject(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null | undefined)?.status;
+  return status === 400 || status === 404 || status === 422;
+}
+
+/** Appel réel au provider via le SDK (seule partie non testable hors ligne). */
+const defaultCompleter: ChaptersCompleter = async (req) => getClient().chat.completions.create(req);
+
+export type ProposeDeps = { complete?: ChaptersCompleter };
+
 export async function proposeChapters(
   meta: { title: string; durationSec: number },
   segs: { startSec: number; text: string }[],
+  deps: ProposeDeps = {},
 ): Promise<Proposed[]> {
+  const complete = deps.complete ?? defaultCompleter;
+
   const system = [
     'Tu découpes des vidéos YouTube en chapitres à partir de leur transcript horodaté.',
-    'Règles :',
+    'Règles de densité (impératives) :',
+    '- Vise UN chapitre toutes les 3 à 8 minutes de vidéo.',
+    '- Ne place JAMAIS deux chapitres à moins de 60 secondes d’écart.',
     '- Le premier chapitre commence à 0 seconde.',
     '- Un chapitre = un vrai changement de sujet ; startSec doit correspondre au début de ce sujet dans le transcript.',
-    '- Environ 1 chapitre toutes les 3 à 8 minutes (minimum 3 chapitres si la vidéo dépasse 1 minute).',
-    '- Écart minimum de 10 secondes entre deux chapitres.',
+    '- Minimum 3 chapitres si la vidéo dépasse 1 minute.',
     '- Titres courts (60 caractères max), informatifs, dans la langue du transcript, sans numérotation ni emoji.',
     '- Réponds uniquement avec le JSON demandé.',
   ].join('\n');
@@ -178,30 +251,36 @@ export async function proposeChapters(
       content: `Titre : ${meta.title}\nDurée : ${meta.durationSec}s\n\nTranscript :\n${condense(segs)}`,
     },
   ];
+  const base = { model: LLM_MODEL, temperature: 0.2 };
 
+  let schemaError = '';
   try {
-    const res = await getClient().chat.completions.create({
-      model: LLM_MODEL,
-      temperature: 0.2,
-      messages,
-      response_format: {
-        type: 'json_schema',
-        json_schema: { name: 'chapters', strict: true, schema: CHAPTERS_SCHEMA },
-      },
-    });
-    return normalize(parseChaptersJson(res.choices[0]?.message?.content ?? ''), meta.durationSec);
-  } catch {
-    // Le support de json_schema varie selon le provider routé : repli json_object
-    // avec le schéma décrit dans le prompt, puis parsing défensif.
-    const res = await getClient().chat.completions.create({
-      model: LLM_MODEL,
-      temperature: 0.2,
-      messages: [
-        ...messages,
-        { role: 'system', content: `Réponds avec un unique objet JSON conforme à ce schéma : ${JSON.stringify(CHAPTERS_SCHEMA)}` },
-      ],
-      response_format: { type: 'json_object' },
-    });
-    return normalize(parseChaptersJson(res.choices[0]?.message?.content ?? ''), meta.durationSec);
+    const first = await complete({ ...base, messages, response_format: JSON_SCHEMA_FORMAT });
+    const chapters = analyzeChaptersJson(first.choices?.[0]?.message?.content ?? '');
+    if (chapters) return normalize(chapters, meta.durationSec);
+    // 200 mais `content` inexploitable (payload réel dans `reasoning`, cf.
+    // qwen3.5-27b routé AtlasCloud qui renvoie `"[0]"`) : on tente json_object.
+  } catch (err) {
+    if (!shouldFallbackToJsonObject(err)) throw err;
+    schemaError = err instanceof Error ? err.message : String(err);
   }
+
+  const second = await complete({
+    ...base,
+    messages: [...messages, SCHEMA_HINT],
+    response_format: { type: 'json_object' },
+  });
+  const message = second.choices?.[0]?.message;
+  const fromContent = analyzeChaptersJson(message?.content ?? '');
+  if (fromContent) return normalize(fromContent, meta.durationSec);
+  // Dernier recours : certains modèles (raisonneurs) déposent le JSON réel dans
+  // `reasoning` en laissant `content` inutilisable.
+  const fromReasoning = analyzeChaptersJson(message?.reasoning ?? '');
+  if (fromReasoning) return normalize(fromReasoning, meta.durationSec);
+
+  throw new UnusableChapterOutputError(
+    `aucun objet JSON de chapitres extractible (model ${LLM_MODEL}` +
+      `${schemaError ? `, json_schema refusé : ${schemaError}` : ''}` +
+      `, content reçu : ${JSON.stringify(message?.content ?? null).slice(0, 160)})`,
+  );
 }
