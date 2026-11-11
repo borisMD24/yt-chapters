@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -13,8 +13,18 @@ import Database from 'better-sqlite3';
 import type { FastifyInstance } from 'fastify';
 import type { JobInput, JobPipeline } from '../src/jobs.ts';
 
-const dbDir = mkdtempSync(join(tmpdir(), 'ckr-up-db-'));
-const mediaDir = mkdtempSync(join(tmpdir(), 'ckr-up-media-'));
+// Dossier temporaire PRIVÉ pour ce fichier de tests : les fichiers de test
+// tournent en parallèle dans des processus séparés, donc compter les dossiers
+// d'envoi dans le dossier temporaire partagé serait instable. On isole tout ici
+// (os.tmpdir() relit TEMP/TMP à chaque appel).
+const privateRoot = mkdtempSync(join(tmpdir(), 'ckr-files-'));
+process.env.TEMP = privateRoot;
+process.env.TMP = privateRoot;
+process.env.TMPDIR = privateRoot;
+const testTmp = tmpdir();
+
+const dbDir = mkdtempSync(join(testTmp, 'ckr-up-db-'));
+const mediaDir = mkdtempSync(join(testTmp, 'ckr-up-media-'));
 process.env.DB_PATH = join(dbDir, 'up.db');
 process.env.MEDIA_DIR = mediaDir;
 
@@ -42,7 +52,7 @@ process.env.MEDIA_DIR = mediaDir;
 }
 
 /** Dossiers d'upload laissés par l'application (doit rester vide). */
-const uploadDirs = () => readdirSync(tmpdir()).filter((f) => f.startsWith('ckr-upload-'));
+const uploadDirs = () => readdirSync(testTmp).filter((f) => f.startsWith('ckr-upload-'));
 const UPLOAD_DIRS_AT_START = uploadDirs().length;
 
 const seen: { path: string; videoId?: string; size: number }[] = [];

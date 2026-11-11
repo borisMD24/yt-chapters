@@ -41,10 +41,27 @@ La page propose trois sources, exclusives l'une de l'autre :
 - **un fichier déjà présent** dans `MEDIA_DIR` (liste déroulante) ;
 - **un chemin saisi** à la main (repli).
 
-Un envoi est **transitoire** : le fichier temporaire (et son dossier) est
-supprimé dès que le chapitrage est terminé, en erreur ou annulé. Rien n'est
-écrit dans le dépôt. Deux envois du **même contenu** réutilisent la même ligne
-d'historique (identifiant dérivé du fichier, `local:up-<empreinte>`).
+Un envoi est **transitoire** : le dossier temporaire est supprimé dès que le
+chapitrage est terminé, en erreur, ou **annulé**. L'annulation n'est pas
+instantanée : la page affiche « Annulation en cours… » et l'état « annulé »
+n'est publié qu'une fois le fichier effectivement supprimé. Au démarrage
+suivant, le serveur supprime aussi les dossiers d'envoi restés d'un arrêt
+brutal (uniquement ceux de plus d'une heure, pour ne jamais gêner un serveur
+en cours). Rien n'est écrit dans le dépôt. Deux envois du **même contenu**
+réutilisent la même ligne d'historique (identifiant dérivé du fichier,
+`local:up-<empreinte>`).
+
+### Exposition de l'envoi de fichier (limite connue)
+
+La route d'envoi n'est **pas authentifiée** et le serveur écoute sur `0.0.0.0` :
+sur un réseau local, n'importe quel hôte joignable peut envoyer un fichier et
+occuper jusqu'à `UPLOAD_MAX_MB` dans le dossier temporaire du système. Les
+autres routes sont bornées par `MEDIA_DIR` ; l'envoi, non. Mesures possibles :
+
+- baisser `UPLOAD_MAX_MB` (plafond d'un envoi) ;
+- si l'outil ne sert qu'en local, écouter uniquement sur la boucle locale :
+  dans `src/server.ts`, remplacer `host: '0.0.0.0'` par `host: '127.0.0.1'`.
+
 
 La page fonctionne hors-ligne : aucun CDN, aucune police externe, aucun build.
 

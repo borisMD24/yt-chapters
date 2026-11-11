@@ -6,7 +6,7 @@
 // - Aucune clé d'API n'est stockée ni renvoyée : les erreurs sont nettoyées.
 import { randomUUID } from 'node:crypto';
 
-export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled';
+export type JobStatus = 'queued' | 'running' | 'cancelling' | 'done' | 'error' | 'cancelled';
 export type JobPhase = 'chunking' | 'transcribing' | 'chaptering' | 'persisting' | 'done';
 
 export type JobInput = {
@@ -140,6 +140,8 @@ export function friendlyErrorMessage(err: unknown): string {
 export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOptions = {}): JobRegistry {
   const jobs = new Map<string, Job>();
   const controllers = new Map<string, AbortController>();
+  /** Nettoyage propre à chaque job (fichier temporaire d'un envoi), mémoïsé. */
+  const cleanups = new Map<string, () => Promise<boolean>>();
   const maxFinished = opts.maxRetainedFinished ?? 20;
   /** Ids des jobs terminés, dans l'ordre d'achèvement (le plus récent en dernier). */
   const finishedOrder: string[] = [];
@@ -148,13 +150,47 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
   const isFinished = (status: JobStatus) => status === 'done' || status === 'error' || status === 'cancelled';
 
   /**
+   * Emballe un finaliseur pour qu'il ne s'exécute jamais deux fois en parallèle
+   * ni deux fois après un succès (idempotent quel que soit l'ordre
+   * annulation/exécution/fin). Une seule relance est autorisée après un échec
+   * transitoire ; seule une réussite marque le nettoyage comme terminé.
+   */
+  function makeCleanup(fn?: () => void | Promise<void>): () => Promise<boolean> {
+    let succeeded = false;
+    let inFlight: Promise<boolean> | null = null;
+    let attempts = 0;
+    return () => {
+      if (succeeded || !fn) return Promise.resolve(true);
+      if (inFlight) return inFlight;
+      if (attempts >= 2) return Promise.resolve(false);
+      attempts++;
+      inFlight = (async () => {
+        try {
+          await fn();
+          succeeded = true;
+          return true;
+        } catch {
+          return false;
+        } finally {
+          inFlight = null;
+        }
+      })();
+      return inFlight;
+    };
+  }
+
+  function cleanupOf(id: string): Promise<boolean> {
+    return cleanups.get(id)?.() ?? Promise.resolve(true);
+  }
+
+  /**
    * Libère le controller d'un job terminé et évince les jobs terminés les plus
-   * anciens au-delà du plafond. Les jobs actifs (queued/running) ne sont jamais
-   * évincés ; le résultat le plus récent reste donc disponible pour l'affichage.
+   * anciens au-delà du plafond. Les jobs actifs (queued/running/cancelling) ne
+   * sont jamais évincés ; le résultat le plus récent reste disponible.
    */
   function releaseFinished(job: Job): void {
-    // Un job déjà évincé n'a plus rien à libérer : sinon un job en attente
-    // exécuté plus tard réintroduirait son id et évincerait un job plus récent.
+    // Un job deja evince n'a plus rien a liberer : sinon un job en attente
+    // execute plus tard reintroduirait son id et evincerait un job plus recent.
     if (!jobs.has(job.id)) return;
     controllers.delete(job.id);
     if (!finishedOrder.includes(job.id)) finishedOrder.push(job.id);
@@ -165,23 +201,40 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
     }
   }
 
-  async function run(job: Job, input: JobInput, signal: AbortSignal): Promise<void> {
-    // Le nettoyage (fichier temporaire d'un envoi) doit avoir lieu exactement
-    // une fois, quel que soit l'état terminal atteint.
-    let finalized = false;
-    const finalize = async (): Promise<void> => {
-      if (finalized) return;
-      finalized = true;
-      try {
-        await input.onFinished?.();
-      } catch {
-        /* nettoyage au mieux : ne doit jamais masquer l'état du job */
-      }
-    };
+  /** Publie l'état terminal « annulé » ; à n'appeler qu'après le nettoyage. */
+  function publishCancelled(job: Job): void {
+    if (job.status === 'cancelled') return;
+    job.status = 'cancelled';
+    job.message = 'Annulé.';
+    job.error = undefined;
+    job.result = undefined;
+    releaseFinished(job);
+  }
 
-    if (job.status === 'cancelled') {
-      await finalize();
-      releaseFinished(job);
+  async function finalizeAndCancel(job: Job): Promise<void> {
+    await cleanupOf(job.id);
+    publishCancelled(job);
+  }
+
+  /** Passe le job en « annulation en cours » : l'arrêt n'est pas instantané. */
+  function beginCancelling(job: Job): void {
+    if (isFinished(job.status) || job.status === 'cancelling') return;
+    job.status = 'cancelling';
+    job.message = 'Annulation en cours…';
+    controllers.get(job.id)?.abort();
+  }
+
+  /**
+   * Statut courant du job, relu dynamiquement : une annulation peut survenir
+   * pendant un `await`, ce que l'analyse de types ne peut pas modéliser.
+   */
+  const statusOf = (job: Job): JobStatus => job.status;
+
+  async function run(job: Job, input: JobInput, signal: AbortSignal): Promise<void> {
+    // Annulé avant de démarrer (ou pendant l'attente dans la file) : le
+    // nettoyage a déjà été lancé par `cancelJob`, ou va l'être ici.
+    if (isFinished(job.status) || job.status === 'cancelling') {
+      await finalizeAndCancel(job);
       return;
     }
     job.status = 'running';
@@ -200,13 +253,11 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
           job.message = messageFor(job);
         },
       });
-      // Le nettoyage a lieu AVANT d'exposer l'état terminal : un observateur ne
-      // peut pas voir « terminé » alors que le fichier temporaire existe encore.
-      await finalize();
-      if (signal.aborted) {
-        job.status = 'cancelled';
-        job.message = 'Annulé.';
-        releaseFinished(job);
+      // Le nettoyage est TERMINÉ avant de publier l'état terminal : aucun
+      // observateur ne voit « terminé » alors que le fichier existe encore.
+      await cleanupOf(job.id);
+      if (signal.aborted || statusOf(job) === 'cancelling') {
+        publishCancelled(job);
         return;
       }
       job.result = result;
@@ -216,11 +267,14 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
       job.message = 'Chapitres prêts.';
       releaseFinished(job);
     } catch (err) {
-      const cancelled = signal.aborted;
-      job.error = cancelled ? undefined : sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
-      job.message = cancelled ? 'Annulé.' : friendlyErrorMessage(err);
-      await finalize();
-      job.status = cancelled ? 'cancelled' : 'error';
+      await cleanupOf(job.id);
+      if (signal.aborted || statusOf(job) === 'cancelling') {
+        publishCancelled(job);
+        return;
+      }
+      job.error = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+      job.message = friendlyErrorMessage(err);
+      job.status = 'error';
       releaseFinished(job);
     }
   }
@@ -236,6 +290,7 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
       message: 'En attente…',
     };
     jobs.set(id, job);
+    cleanups.set(id, makeCleanup(input.onFinished));
     const controller = new AbortController();
     controllers.set(id, controller);
     tail = tail.then(() => run(job, input, controller.signal)).catch(() => {});
@@ -249,11 +304,16 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
   function cancelJob(id: string): Job | undefined {
     const job = jobs.get(id);
     if (!job) return undefined;
-    if (isFinished(job.status)) return job;
-    job.status = 'cancelled';
-    job.message = 'Annulé.';
-    controllers.get(id)?.abort();
-    releaseFinished(job);
+    if (isFinished(job.status) || job.status === 'cancelling') return job;
+    const wasQueued = job.status === 'queued';
+    beginCancelling(job);
+    if (wasQueued) {
+      // Rien ne tourne : on nettoie tout de suite. L'état `cancelled` n'est
+      // publié qu'une fois le fichier temporaire effectivement supprimé.
+      void finalizeAndCancel(job);
+    }
+    // Job en cours : l'état terminal viendra quand le pipeline aura observé
+    // l'annulation ET que le nettoyage sera terminé.
     return job;
   }
 

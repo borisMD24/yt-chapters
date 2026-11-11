@@ -671,6 +671,7 @@
           result: null,
           busy: false,
           maxPercent: 0,
+          lastStatus: '',
         };
 
         var els = {
@@ -953,6 +954,7 @@
           setBusy(true);
           els.stepProgress.hidden = false;
           els.cancel.hidden = false;
+          els.cancel.disabled = false;
           setProgress(null);
           els.status.textContent = source.kind === 'upload' ? 'Envoi du fichier…' : 'Préparation…';
 
@@ -1052,6 +1054,7 @@
         }
 
         function pollJob() {
+          state.timer = null;
           if (!state.jobId) return;
           fetch('/local/jobs/' + encodeURIComponent(state.jobId))
             .then((r) => {
@@ -1066,9 +1069,7 @@
             })
             .then((job) => {
               applyJob(job);
-              if (job.status === 'queued' || job.status === 'running') {
-                state.timer = setTimeout(pollJob, 1000);
-              }
+              ensurePolling();
             })
             .catch((err) => {
               if (err && err.httpStatus === 404) {
@@ -1081,7 +1082,17 @@
             });
         }
 
+        /** Continue à interroger le serveur tant que le job n'est pas terminal. */
+        function ensurePolling() {
+          if (!state.jobId || state.timer) return;
+          var status = state.lastStatus;
+          if (status === 'queued' || status === 'running' || status === 'cancelling') {
+            state.timer = setTimeout(pollJob, 1000);
+          }
+        }
+
         function applyJob(job) {
+          state.lastStatus = job.status;
           els.stepProgress.hidden = false;
           els.status.textContent = job.message || 'Traitement…';
 
@@ -1157,16 +1168,17 @@
         function cancelJob() {
           if (!state.jobId) return;
           els.cancel.disabled = true;
+          // L'arrêt n'est pas instantané : le serveur publie « Annulation en
+          // cours… » puis « Annulé » une fois le fichier temporaire supprimé.
+          // On continue donc à interroger le serveur au lieu de simuler l'arrêt.
+          els.status.textContent = 'Annulation en cours…';
           fetch('/local/jobs/' + encodeURIComponent(state.jobId), { method: 'DELETE' })
-            .catch(() => {})
-            .then(() => {
-              els.cancel.disabled = false;
-              els.cancel.hidden = true;
-              stopPolling();
-              setBusy(false);
-              els.stepProgress.hidden = true;
-              els.status.textContent = '';
-            });
+            .then(readJson)
+            .then((res) => {
+              if (res.data && res.data.status) applyJob(res.data);
+              ensurePolling();
+            })
+            .catch(() => ensurePolling());
         }
 
         // ---------- copie / téléchargement ----------

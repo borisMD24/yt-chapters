@@ -265,6 +265,10 @@ test('un job actif n\'est jamais évincé par le plafond', async () => {
   registry.cancelJob(q1.id);
   registry.cancelJob(q2.id);
 
+  // L'annulation est asynchrone (elle attend la fin du nettoyage) : on attend
+  // que l'éviction du plus ancien terminé ait effectivement eu lieu.
+  await until(() => registry.getJob(q1.id) === undefined);
+
   assert.equal(registry.getJob(long.id)!.status, 'running', 'le job actif est conservé');
   assert.equal(registry.getJob(q1.id), undefined, 'le plus ancien terminé est évincé');
   assert.ok(registry.getJob(q2.id), 'le plus récent terminé reste disponible');

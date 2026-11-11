@@ -14,7 +14,7 @@ import { fetchMeta, fetchTranscript, listChannelVideos } from './youtube';
 import { proposeChapters, buildWarnings, chaptersToText } from './chapters';
 import { generateLocalChapters, persistLocalChapters } from './local-chapters';
 import { createJobRegistry, type JobInput, type JobPipeline } from './jobs';
-import { MEDIA_EXTENSIONS, UploadError, saveUpload } from './upload';
+import { MEDIA_EXTENSIONS, UploadError, saveUpload, sweepStaleUploads } from './upload';
 
 // Une seule source de vérité pour les extensions acceptées (liste MEDIA_DIR
 // et envoi de fichier).
@@ -25,6 +25,8 @@ export type AppOptions = {
   pipeline?: JobPipeline;
   /** Journalisation Fastify (désactivée dans les tests). */
   logger?: boolean;
+  /** Nettoyage des dossiers d'envoi abandonnés au démarrage (défaut : oui). */
+  sweepStaleUploads?: boolean;
 };
 
 const idParam = z.object({ id: z.string().min(1) });
@@ -93,6 +95,13 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   // l'écrit au fur et à mesure. Aucun tamponnage mémoire, donc aucune limite
   // implicite de Fastify : le plafond est appliqué par `saveUpload`.
   app.addContentTypeParser('application/octet-stream', (_req, payload, done) => done(null, payload));
+
+  // Rattrapage des dossiers d'envoi laissés par un arrêt brutal (fichier
+  // temporaire jamais récupéré). Non bloquant ; seuls les dossiers vraiment
+  // abandonnés (plus vieux qu'une heure) sont supprimés.
+  if (options.sweepStaleUploads !== false) {
+    void sweepStaleUploads().catch(() => {});
+  }
 
   // ---------- helpers ----------
 
@@ -426,7 +435,11 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       saved = await saveUpload(body as Readable, { filename, maxBytes: uploadMaxBytes() });
     } catch (err) {
       if (err instanceof UploadError) return reply.code(err.status).send({ error: err.message });
-      throw err;
+      // Jamais de détail technique dans la réponse (chemins, utilisateur…).
+      req.log.error(err);
+      return reply
+        .code(500)
+        .send({ error: "L'envoi du fichier a échoué. Réessayez, ou choisissez un autre fichier." });
     }
 
     const job = registry.createJob({

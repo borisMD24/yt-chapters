@@ -2,10 +2,13 @@
 // temporaire privé, empreinte de contenu. Aucune dépendance, aucun tampon
 // intermédiaire : le flux de la requête est écrit au fur et à mesure.
 import { createHash } from 'node:crypto';
-import { mkdtemp, open, rm } from 'node:fs/promises';
+import { mkdtemp, open, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import type { Readable } from 'node:stream';
+
+/** Préfixe des dossiers temporaires d'envoi. */
+export const UPLOAD_DIR_PREFIX = 'ckr-upload-';
 
 /** Extensions de médias acceptées (mêmes règles que la liste MEDIA_DIR). */
 export const MEDIA_EXTENSIONS = [
@@ -59,6 +62,38 @@ export function isAllowedMediaName(name: string): boolean {
   return MEDIA_EXT_SET.has(extname(name).toLowerCase());
 }
 
+/**
+ * Nettoie les dossiers d'envoi abandonnés par un arrêt brutal du serveur.
+ * Ne touche qu'aux dossiers `ckr-upload-*` dont la date de modification est
+ * plus vieille que `maxAgeMs` (1 h par défaut) : un serveur concurrent, ou un
+ * envoi en cours, a forcément un dossier récent et n'est donc jamais perturbé.
+ * Renvoie le nombre de dossiers supprimés.
+ */
+export async function sweepStaleUploads(maxAgeMs = 60 * 60 * 1000): Promise<number> {
+  const dir = tmpdir();
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  const now = Date.now();
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(UPLOAD_DIR_PREFIX)) continue;
+    const full = join(dir, entry.name);
+    try {
+      const info = await stat(full);
+      if (now - info.mtimeMs < maxAgeMs) continue; // encore actif : on n'y touche pas
+      await rm(full, { recursive: true, force: true });
+      removed++;
+    } catch {
+      /* dossier disparu ou verrouillé : on réessaiera au prochain démarrage */
+    }
+  }
+  return removed;
+}
+
 export type SavedUpload = {
   /** Chemin absolu du fichier temporaire. */
   path: string;
@@ -86,7 +121,7 @@ export async function saveUpload(
     throw new UploadError(`Ce format de fichier n'est pas pris en charge. Formats acceptés : ${EXTENSIONS_LISIBLES}.`, 415);
   }
 
-  const dir = await mkdtemp(join(tmpdir(), 'ckr-upload-'));
+  const dir = await mkdtemp(join(tmpdir(), UPLOAD_DIR_PREFIX));
   const cleanup = () => rm(dir, { recursive: true, force: true });
   try {
     const target = join(dir, safeName);
@@ -114,6 +149,12 @@ export async function saveUpload(
     return { path: target, dir, bytes, sha1: hash.digest('hex'), cleanup };
   } catch (err) {
     await cleanup();
+    if (err instanceof UploadError) throw err;
+    // Erreurs du système de fichiers (nom trop long, fichier disparu…) :
+    // réponse 400 en français, jamais le message brut (qui contient le chemin).
+    if (err && typeof (err as NodeJS.ErrnoException).code === 'string') {
+      throw new UploadError('Le nom du fichier est trop long ou invalide. Renommez-le, puis réessayez.', 400);
+    }
     throw err;
   }
 }
