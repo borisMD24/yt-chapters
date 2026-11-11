@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Administration — clé OpenRouter et outils</title>
+    <style>
+      /* Mêmes jetons de design que la page principale (« atelier » éditorial). */
+      :root {
+        --paper: #f7f4ee;
+        --surface: #ffffff;
+        --surface-2: #fbf9f5;
+        --ink: #1a1714;
+        --muted: #6b635a;
+        --border: #e2dcd2;
+        --border-strong: #cfc7ba;
+        --accent: #b3341f;
+        --accent-strong: #8f2716;
+        --accent-soft: #fbeae6;
+        --ok: #1f6b4a;
+        --ok-soft: #e7f3ec;
+        --warn: #7a4a00;
+        --warn-soft: #fff4e0;
+        --err: #a02020;
+        --err-soft: #fdecec;
+        --radius: 10px;
+        --radius-sm: 6px;
+        --shadow: 0 1px 2px rgba(26, 23, 20, 0.06), 0 10px 30px -18px rgba(26, 23, 20, 0.35);
+        --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        --serif: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
+        --mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Consolas, 'Courier New', monospace;
+        --step-gap: clamp(20px, 4vw, 34px);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 17px;
+        line-height: 1.55;
+      }
+      .wrap {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: clamp(20px, 5vw, 48px) clamp(16px, 5vw, 32px) 64px;
+      }
+      :focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+
+      .masthead {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 22px;
+        margin-bottom: var(--step-gap);
+      }
+      .kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 10px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .rec {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 4px var(--accent-soft);
+      }
+      .masthead h1 {
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: clamp(1.6rem, 4.5vw, 2.2rem);
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        margin: 0 0 12px;
+      }
+      .lede {
+        margin: 0;
+        color: var(--muted);
+        max-width: 60ch;
+      }
+
+      .step {
+        margin: 0 0 var(--step-gap);
+      }
+      .step h2 {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: 1.28rem;
+        margin: 0 0 14px;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px 18px 20px;
+        box-shadow: var(--shadow);
+      }
+
+      /* ---------- badge d'état ---------- */
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 700;
+        font-size: 0.98rem;
+        border-radius: 999px;
+        padding: 6px 14px;
+        border: 1px solid var(--border-strong);
+        background: var(--surface-2);
+        color: var(--ink);
+      }
+      .badge .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+      .badge.ok {
+        background: var(--ok-soft);
+        border-color: #b7ddc8;
+        color: var(--ok);
+      }
+      .badge.ok .dot {
+        background: var(--ok);
+      }
+      .badge.warn-badge {
+        background: var(--warn-soft);
+        border-color: #ecd6a8;
+        color: var(--warn);
+      }
+      .badge.warn-badge .dot {
+        background: var(--warn);
+      }
+      .badge.refused {
+        background: var(--err-soft);
+        border-color: #e9b7b7;
+        color: var(--err);
+      }
+      .badge.refused .dot {
+        background: var(--err);
+      }
+
+      dl.facts {
+        margin: 16px 0 0;
+        display: grid;
+        grid-template-columns: minmax(9rem, auto) 1fr;
+        gap: 8px 16px;
+      }
+      dl.facts dt {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 0.92rem;
+      }
+      dl.facts dd {
+        margin: 0;
+        word-break: break-word;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.92rem;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 1px 5px;
+      }
+
+      label.field {
+        display: grid;
+        gap: 5px;
+        font-weight: 600;
+        font-size: 0.95rem;
+        margin-top: 18px;
+      }
+      input[type='password'] {
+        font: inherit;
+        color: var(--ink);
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+        padding: 10px 12px;
+        width: 100%;
+        max-width: 520px;
+        font-family: var(--mono);
+      }
+      .help {
+        font-weight: 400;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      .row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        margin-top: 16px;
+      }
+      .btn {
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        border-radius: var(--radius);
+        border: 1px solid transparent;
+        padding: 12px 18px;
+        min-height: 46px;
+        transition: background 0.12s ease, border-color 0.12s ease, transform 0.06s ease;
+      }
+      .btn:active {
+        transform: translateY(1px);
+      }
+      .btn[disabled] {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      .btn-primary:hover:not([disabled]) {
+        background: var(--accent-strong);
+      }
+      .btn-secondary {
+        background: var(--surface);
+        color: var(--ink);
+        border-color: var(--border-strong);
+      }
+      .btn-secondary:hover:not([disabled]) {
+        border-color: var(--ink);
+      }
+
+      .banner {
+        border-radius: var(--radius);
+        padding: 12px 15px;
+        border: 1px solid transparent;
+        margin-top: 14px;
+        font-size: 0.95rem;
+      }
+      .banner.err {
+        background: var(--err-soft);
+        border-color: #e9b7b7;
+        color: #6f1616;
+      }
+      .banner.ok {
+        background: var(--ok-soft);
+        border-color: #b7ddc8;
+        color: var(--ok);
+      }
+      .banner.warn {
+        background: var(--warn-soft);
+        border-color: #ecd6a8;
+        color: var(--warn);
+      }
+      .banner p {
+        margin: 0 0 8px;
+      }
+      .banner :last-child {
+        margin-bottom: 0;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      footer {
+        border-top: 1px solid var(--border);
+        margin-top: 40px;
+        padding-top: 20px;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="masthead">
+        <p class="kicker"><span class="rec" aria-hidden="true"></span> Administration</p>
+        <h1>Clé OpenRouter et outils</h1>
+        <p class="lede">
+          Enregistrez ici la clé OpenRouter utilisée pour la transcription et le chapitrage. Elle est prioritaire sur
+          la variable <code>OPENROUTER_API_KEY</code> du fichier <code>.env</code>.
+        </p>
+      </header>
+
+      <div id="load-error" class="banner err" role="alert" hidden>
+        <p id="load-error-text"></p>
+      </div>
+
+      <section class="step" aria-labelledby="title-key">
+        <h2 id="title-key">Clé OpenRouter</h2>
+        <div class="card">
+          <p>
+            <span id="status-badge" class="badge" role="status"><span class="dot" aria-hidden="true"></span><span id="status-badge-text">Chargement…</span></span>
+          </p>
+
+          <dl class="facts">
+            <dt>Source</dt>
+            <dd id="key-source">—</dd>
+            <dt>Clé (masquée)</dt>
+            <dd id="key-hint">—</dd>
+            <dt>Dernière mise à jour</dt>
+            <dd id="key-updated">—</dd>
+          </dl>
+
+          <label class="field" for="key-input">
+            Nouvelle clé OpenRouter
+            <input
+              id="key-input"
+              type="password"
+              name="openrouter-key"
+              autocomplete="off"
+              spellcheck="false"
+              aria-describedby="key-help"
+              placeholder="sk-or-…"
+            />
+            <span id="key-help" class="help">
+              Collez la clé complète fournie par OpenRouter. Elle n'est jamais réaffichée en entier, ni enregistrée
+              par le navigateur.
+            </span>
+          </label>
+
+          <div class="row-actions">
+            <button id="save-key" class="btn btn-primary" type="button">Enregistrer</button>
+            <button id="delete-key" class="btn btn-secondary" type="button">Supprimer la clé</button>
+            <button id="test-key" class="btn btn-secondary" type="button">Tester la clé</button>
+            <button id="refresh" class="btn btn-secondary" type="button">Actualiser</button>
+          </div>
+
+          <div id="key-message" class="banner" role="status" aria-live="polite" hidden>
+            <p id="key-message-text"></p>
+          </div>
+        </div>
+
+        <div class="banner warn">
+          <p><strong>Stockage en clair</strong></p>
+          <p>
+            La clé est enregistrée <strong>en clair dans le fichier de base de données local</strong> (le même niveau
+            de protection que le fichier <code>.env</code> qu'elle remplace). Ne partagez pas ce fichier et ne le
+            placez pas dans un dépôt ou une sauvegarde partagée.
+          </p>
+        </div>
+      </section>
+
+      <section class="step" aria-labelledby="title-tools">
+        <h2 id="title-tools">Outils et dossiers</h2>
+        <div class="card">
+          <dl class="facts">
+            <dt>ffmpeg / ffprobe</dt>
+            <dd id="tools-text">—</dd>
+            <dt>Dossier des médias</dt>
+            <dd id="media-dir">—</dd>
+            <dt>Plafond d'un envoi</dt>
+            <dd id="upload-max">—</dd>
+            <dt>Base de données</dt>
+            <dd id="db-path">—</dd>
+          </dl>
+          <div id="media-warn" class="banner warn" role="status" hidden>
+            <p id="media-warn-text"></p>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <p class="muted" style="margin: 0">
+          Les actions d'écriture (enregistrer, supprimer, tester) ne sont possibles que depuis cet ordinateur. <a href="/">Retour à l'outil de chapitrage</a>.
+        </p>
+      </footer>
+    </div>
+
+    <script>
+      (() => {
+        'use strict';
+        var $ = (id) => document.getElementById(id);
+
+        var els = {
+          loadError: $('load-error'),
+          loadErrorText: $('load-error-text'),
+          badge: $('status-badge'),
+          badgeText: $('status-badge-text'),
+          source: $('key-source'),
+          hint: $('key-hint'),
+          updated: $('key-updated'),
+          input: $('key-input'),
+          save: $('save-key'),
+          del: $('delete-key'),
+          test: $('test-key'),
+          refresh: $('refresh'),
+          message: $('key-message'),
+          messageText: $('key-message-text'),
+          tools: $('tools-text'),
+          mediaDir: $('media-dir'),
+          mediaWarn: $('media-warn'),
+          mediaWarnText: $('media-warn-text'),
+          uploadMax: $('upload-max'),
+          dbPath: $('db-path'),
+        };
+
+        /** Lit une réponse JSON sans planter si le corps n'est pas du JSON. */
+        function readJson(res) {
+          return res.json().then(
+            function (data) {
+              return { ok: res.ok, status: res.status, data: data };
+            },
+            function () {
+              return { ok: res.ok, status: res.status, data: {} };
+            },
+          );
+        }
+
+        function setMessage(text, kind) {
+          if (!text) {
+            els.message.hidden = true;
+            els.messageText.textContent = '';
+            return;
+          }
+          els.message.className = 'banner' + (kind ? ' ' + kind : '');
+          els.messageText.textContent = text;
+          els.message.hidden = false;
+        }
+
+        function formatDate(iso) {
+          if (!iso) return '—';
+          var d = new Date(iso);
+          if (isNaN(d.getTime())) return '—';
+          try {
+            return d.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' });
+          } catch (e) {
+            return d.toLocaleString();
+          }
+        }
+
+        /** Badge : configurée (base ou .env) / refusée (exemple) / absente. */
+        function renderKey(key) {
+          var configured = !!(key && key.configured);
+          var source = key && key.source;
+          var reason = key && key.reason;
+
+          els.badge.className = 'badge';
+          if (configured) {
+            els.badge.classList.add('ok');
+            els.badgeText.textContent = source === 'env' ? 'Configurée (fichier .env)' : 'Configurée';
+          } else if (reason === 'placeholder') {
+            els.badge.classList.add('refused');
+            els.badgeText.textContent = 'Refusée (exemple ou trop courte)';
+          } else {
+            els.badge.classList.add('warn-badge');
+            els.badgeText.textContent = 'Absente';
+          }
+
+          els.source.textContent =
+            source === 'db'
+              ? 'Base de données (prioritaire sur le .env)'
+              : source === 'env'
+                ? 'Fichier .env (OPENROUTER_API_KEY)'
+                : 'Aucune clé utilisable';
+          els.hint.textContent = (key && key.hint) || '—';
+          els.updated.textContent = formatDate(key && key.updatedAt);
+        }
+
+        function render(data) {
+          renderKey(data.openrouterKey);
+          var ffmpeg = data.ffmpeg || {};
+          var ffprobe = data.ffprobe || {};
+          if (ffmpeg.ok && ffprobe.ok) {
+            els.tools.textContent =
+              'disponibles' + (ffmpeg.version ? ' (ffmpeg ' + ffmpeg.version + ', ffprobe ' + ffprobe.version + ')' : '');
+          } else {
+            var missing = [];
+            if (!ffmpeg.ok) missing.push('ffmpeg');
+            if (!ffprobe.ok) missing.push('ffprobe');
+            els.tools.textContent = missing.join(' et ') + ' introuvable(s) — installez-le(s) puis relancez le serveur';
+          }
+
+          els.mediaDir.textContent = data.mediaDir || '—';
+          els.uploadMax.textContent = data.uploadMaxMb ? data.uploadMaxMb + ' Mo' : '—';
+          els.dbPath.textContent = data.dbPath || '—';
+
+          if (data.mediaDirExists === false) {
+            els.mediaWarnText.textContent =
+              'Ce dossier est introuvable : la liste des fichiers restera vide. Indiquez le bon dossier avec MEDIA_DIR, puis relancez le serveur.';
+            els.mediaWarn.hidden = false;
+          } else {
+            els.mediaWarn.hidden = true;
+          }
+        }
+
+        function hideLoadError() {
+          els.loadError.hidden = true;
+          els.loadErrorText.textContent = '';
+        }
+
+        function showLoadError(message) {
+          els.loadErrorText.textContent = message;
+          els.loadError.hidden = false;
+        }
+
+        function load() {
+          return fetch('/admin/settings')
+            .then(readJson)
+            .then(function (res) {
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              hideLoadError();
+              render(res.data || {});
+            })
+            .catch(function () {
+              showLoadError("Impossible de lire l'état de l'administration. Vérifiez que le serveur est démarré, puis actualisez.");
+            });
+        }
+
+        /** Exécute une action protégée puis rafraîchit l'affichage. */
+        function action(path, init, onSuccess) {
+          setMessage('', '');
+          fetch(path, init)
+            .then(readJson)
+            .then(function (res) {
+              if (!res.ok) {
+                var msg = (res.data && res.data.error) || "L'action a échoué.";
+                setMessage(typeof msg === 'string' ? msg : "L'action a échoué.", 'err');
+                return;
+              }
+              if (onSuccess) onSuccess(res.data || {});
+              return load();
+            })
+            .catch(function () {
+              setMessage("Impossible de contacter l'outil. Vérifiez qu'il est toujours démarré.", 'err');
+            });
+        }
+
+        els.save.addEventListener('click', function () {
+          var key = els.input.value.trim();
+          if (!key) {
+            setMessage('Saisissez une clé avant d’enregistrer.', 'err');
+            return;
+          }
+          action(
+            '/admin/openrouter-key',
+            {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ key: key }),
+            },
+            function () {
+              els.input.value = '';
+              setMessage('Clé enregistrée dans la base de données.', 'ok');
+            },
+          );
+        });
+
+        els.del.addEventListener('click', function () {
+          action('/admin/openrouter-key', { method: 'DELETE' }, function () {
+            setMessage('Clé supprimée. La variable OPENROUTER_API_KEY du .env est de nouveau utilisée si elle existe.', 'ok');
+          });
+        });
+
+        els.test.addEventListener('click', function () {
+          action('/admin/openrouter-key/test', { method: 'POST' }, function (data) {
+            setMessage(data.message || 'Test terminé.', data.ok ? 'ok' : 'err');
+            if (data.ok && data.usage !== undefined) {
+              els.messageText.textContent +=
+                ' Utilisation : ' + data.usage + (data.limit !== undefined ? ' / ' + data.limit : '') + (data.remaining !== undefined ? ' (restant ' + data.remaining + ')' : '');
+            }
+          });
+        });
+
+        els.refresh.addEventListener('click', function () {
+          setMessage('', '');
+          load();
+        });
+
+        load();
+      })();
+    </script>
+  </body>
+</html>

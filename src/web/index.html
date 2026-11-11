@@ -664,6 +664,9 @@
             </div>
           </div>
         </details>
+        <p class="muted" style="margin: 14px 0 0">
+          <a href="/admin">Administration</a> — clé OpenRouter, outils et dossiers.
+        </p>
       </footer>
     </div>
 
@@ -801,14 +804,14 @@
                 );
               }
 
-              // Clé de transcription : absente ou restée à un exemple du .env.
+              // Clé de transcription : absente ou restée à un exemple (base ou .env).
               // Le serveur n'envoie jamais la valeur, seulement ce verdict.
               if (data.openrouterKey && data.openrouterKey.ok === false) {
                 parts.push(
                   "Le service de transcription n'est pas configuré : " +
                     (data.openrouterKey.reason === 'placeholder'
-                      ? 'la clé OpenRouter du fichier .env (OPENROUTER_API_KEY) est vide ou contient encore un exemple. Renseignez une clé valide, puis relancez le serveur.'
-                      : 'la clé OpenRouter est absente du fichier .env (OPENROUTER_API_KEY). Renseignez une clé valide, puis relancez le serveur.'),
+                      ? 'la clé OpenRouter enregistrée est vide ou contient encore un exemple. Renseignez une clé valide dans la page Administration, ou dans le fichier .env (OPENROUTER_API_KEY), puis relancez le serveur.'
+                      : "aucune clé OpenRouter n'est enregistrée. Renseignez-en une dans la page Administration, ou dans le fichier .env (OPENROUTER_API_KEY)."),
                 );
               }
 

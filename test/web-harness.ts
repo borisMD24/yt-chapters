@@ -74,7 +74,8 @@ function makeEl(id: string): FakeEl {
 
 /**
  * `routes` reçoit les URL non internes au harnais et doit renvoyer un objet
- * de type `Response` ({ ok, status, json() }).
+ * de type `Response` ({ ok, status, json() }). `options.file` permet d'évaluer
+ * une autre page (ex. `src/web/admin.html`) avec le même faux DOM.
  */
 export function bootPage(
   routes: (url: string, init?: FetchCall['init']) => Promise<unknown> = async () => ({
@@ -82,8 +83,9 @@ export function bootPage(
     status: 200,
     json: async () => ({}),
   }),
+  options: { file?: URL | string } = {},
 ): Harness {
-  const html = readFileSync(new URL('../src/web/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(options.file ?? new URL('../src/web/index.html', import.meta.url), 'utf8');
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
   assert.ok(script, 'la page doit contenir un <script>');
 

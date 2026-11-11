@@ -1,16 +1,18 @@
 import OpenAI from 'openai';
 import { z } from 'zod';
-import { openRouterApiKey } from './openrouter-key';
+import { resolveOpenRouterKey } from './openrouter-key';
 
 // Chaptering LLM via OpenRouter (SDK openai avec baseURL OpenRouter).
 const BASE_URL = process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1';
 export const LLM_MODEL = process.env.OPENROUTER_MODEL ?? 'qwen/qwen3.5-27b';
 
-// Client créé paresseusement : évite d'exiger une clé tant qu'aucun chapitre n'est demandé.
-let client: OpenAI | null = null;
+// Client créé paresseusement et INDEXÉ par la clé effective : une mise à jour de
+// la clé depuis l'administration invalide donc le cache au prochain appel (aucun
+// client périmé conservant l'ancienne clé).
+let cached: { key: string; client: OpenAI } | null = null;
 function getClient(): OpenAI {
-  const apiKey = openRouterApiKey();
-  if (!apiKey) {
+  const { key } = resolveOpenRouterKey();
+  if (!key) {
     // Sans ce garde-fou, le SDK retombe sur OPENAI_API_KEY et l'erreur nomme
     // la mauvaise variable (diagnostic trompeur).
     throw new Error(
@@ -18,8 +20,8 @@ function getClient(): OpenAI {
         "(le SDK retomberait sinon sur OPENAI_API_KEY, d'où une erreur trompeuse).",
     );
   }
-  client ??= new OpenAI({ apiKey, baseURL: BASE_URL });
-  return client;
+  if (!cached || cached.key !== key) cached = { key, client: new OpenAI({ apiKey: key, baseURL: BASE_URL }) };
+  return cached.client;
 }
 
 export const MIN_GAP = 10; // règle YouTube : 10s min par chapitre

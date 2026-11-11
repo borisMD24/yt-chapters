@@ -2,13 +2,13 @@
 // `createApp` renvoie l'instance sans écouter : `src/server.ts` est le point
 // d'entrée qui appelle `listen`. Le pipeline de chapitrage local est injectable
 // (`options.pipeline`) pour les tests, sans toucher aux routes existantes.
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { and, asc, desc, eq, like, sql } from 'drizzle-orm';
-import { db } from './db';
+import { db, dbPath } from './db';
 import { videos, segments, chapters } from './db/schema';
 import { fetchMeta, fetchTranscript, listChannelVideos } from './youtube';
 import { proposeChapters, buildWarnings, chaptersToText } from './chapters';
@@ -16,7 +16,15 @@ import { generateLocalChapters, persistLocalChapters } from './local-chapters';
 import { createJobRegistry, type JobFailureLogger, type JobInput, type JobPipeline } from './jobs';
 import { MEDIA_EXTENSIONS, UploadError, saveUpload, sweepStaleUploads } from './upload';
 import { checkTools, defaultToolChecker, MEDIA_UNREADABLE_MESSAGE, type ToolChecker } from './media-check';
-import { openRouterKeyStatus } from './openrouter-key';
+import {
+  OPENROUTER_KEY_INVALID_MESSAGE,
+  clearOpenRouterKey,
+  openRouterKeyReport,
+  openRouterKeyStatus,
+  resolveOpenRouterKey,
+  storeOpenRouterKey,
+} from './openrouter-key';
+import { testOpenRouterKey } from './openrouter-key-test';
 
 // Une seule source de vérité pour les extensions acceptées (liste MEDIA_DIR
 // et envoi de fichier).
@@ -33,6 +41,27 @@ export const MIN_CHUNK_SEC_UI = 30;
 /** Message d'erreur (français) d'une durée de morceau trop courte. */
 export const CHUNK_SEC_TOO_SHORT_MESSAGE = `Durée des morceaux invalide : indiquez au moins ${MIN_CHUNK_SEC_UI} secondes.`;
 
+/** Message d'erreur (français) : administration réservée à la boucle locale. */
+export const ADMIN_LOOPBACK_ONLY_MESSAGE =
+  "L'administration n'est possible que depuis cet ordinateur (adresse locale 127.0.0.1). Cette action a été refusée.";
+
+/** Message d'erreur (français) : aucune clé à tester. */
+export const OPENROUTER_KEY_ABSENT_MESSAGE =
+  "Aucune clé OpenRouter n'est configurée : enregistrez-en une avant de la tester.";
+
+/** Message d'erreur (français) : écriture de la clé impossible. */
+export const ADMIN_STORE_FAILED_MESSAGE =
+  "Impossible d'enregistrer la clé dans la base de données. Vérifiez que le dossier est accessible en écriture, puis réessayez.";
+
+/**
+ * Vrai si l'adresse d'un client est la boucle locale. Les écritures et le test
+ * de clé sont réservés à cet ordinateur ; la lecture (`GET /admin/settings`)
+ * reste ouverte mais ne révèle jamais la clé.
+ */
+export function isLoopbackAddress(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
 export type AppOptions = {
   /** Pipeline de chapitrage injectable (tests) ; par défaut, le pipeline réel. */
   pipeline?: JobPipeline;
@@ -46,6 +75,8 @@ export type AppOptions = {
   jobLogger?: JobFailureLogger;
   /** Détection des outils au démarrage (défaut : oui). */
   preflight?: boolean;
+  /** `fetch` injectable pour le test de clé OpenRouter (tests, jamais le réseau). */
+  keyTestFetch?: typeof fetch;
 };
 
 const idParam = z.object({ id: z.string().min(1) });
@@ -436,15 +467,16 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
 
   // ffmpeg/ffprobe sont-ils utilisables ? La page interroge cette route au
   // chargement pour prévenir AVANT de lancer un chapitrage voué à l'échec. On y
-  // joint l'état de la clé de transcription (absente / restée à l'exemple) — la
-  // clé elle-même n'est jamais renvoyée, pas même tronquée.
+  // joint l'état de la clé de transcription (base d'abord, puis `.env` ; absente
+  // ou restée à l'exemple) — la clé elle-même n'est jamais renvoyée, pas même
+  // tronquée.
   app.get('/local/health', async () => {
     const tools = await checkTools(toolChecker);
     const dir = mediaDir();
     return {
       ffmpeg: { ok: tools.ffmpeg.ok, ...(tools.ffmpeg.version ? { version: tools.ffmpeg.version } : {}) },
       ffprobe: { ok: tools.ffprobe.ok, ...(tools.ffprobe.version ? { version: tools.ffprobe.version } : {}) },
-      openrouterKey: openRouterKeyStatus(),
+      openrouterKey: resolveOpenRouterKey().status,
       mediaDir: dir,
       mediaDirExists: await isDirectory(dir),
       uploadMaxMb: uploadMaxMb(),
@@ -590,6 +622,65 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         date: r.date.toISOString(),
       })),
     };
+  });
+
+  // ---------- administration (clé OpenRouter, outils, chemins) ----------
+
+  /**
+   * Refuse (403, message français) toute action d'administration qui ne vient
+   * PAS de la boucle locale : la page reste lisible depuis le réseau, mais
+   * personne d'autre ne peut lire ni modifier la clé.
+   */
+  function allowLocalOnly(req: FastifyRequest, reply: FastifyReply): boolean {
+    if (isLoopbackAddress(req.socket.remoteAddress)) return true;
+    reply.code(403).send({ error: ADMIN_LOOPBACK_ONLY_MESSAGE });
+    return false;
+  }
+
+  app.get('/admin', async (_req, reply) => {
+    const html = await readFile(new URL('./web/admin.html', import.meta.url), 'utf8');
+    return reply.type('text/html; charset=utf-8').send(html);
+  });
+
+  // Lecture seule : ouverte, mais ne renvoie JAMAIS la clé (masque au plus).
+  app.get('/admin/settings', async () => {
+    const tools = await checkTools(toolChecker);
+    const dir = mediaDir();
+    return {
+      openrouterKey: openRouterKeyReport(),
+      ffmpeg: { ok: tools.ffmpeg.ok, ...(tools.ffmpeg.version ? { version: tools.ffmpeg.version } : {}) },
+      ffprobe: { ok: tools.ffprobe.ok, ...(tools.ffprobe.version ? { version: tools.ffprobe.version } : {}) },
+      mediaDir: dir,
+      mediaDirExists: await isDirectory(dir),
+      uploadMaxMb: uploadMaxMb(),
+      dbPath,
+    };
+  });
+
+  // Enregistre la clé. Les règles de disponibilité existantes restent l'unique
+  // juge d'une clé collée (vide / trop courte / exemple → refus en français).
+  app.put('/admin/openrouter-key', async (req, reply) => {
+    if (!allowLocalOnly(req, reply)) return;
+    const { key } = z.object({ key: z.string() }).parse(req.body);
+    const value = key.trim();
+    if (!openRouterKeyStatus(value).ok) return reply.code(400).send({ error: OPENROUTER_KEY_INVALID_MESSAGE });
+    if (!storeOpenRouterKey(value)) return reply.code(500).send({ error: ADMIN_STORE_FAILED_MESSAGE });
+    return { openrouterKey: openRouterKeyReport() };
+  });
+
+  // Supprime la clé enregistrée : le résolveur retombe alors sur le `.env`.
+  app.delete('/admin/openrouter-key', async (req, reply) => {
+    if (!allowLocalOnly(req, reply)) return;
+    clearOpenRouterKey();
+    return { openrouterKey: openRouterKeyReport() };
+  });
+
+  // Test « à blanc » : `GET /api/v1/key` d'OpenRouter (aucun jeton consommé).
+  app.post('/admin/openrouter-key/test', async (req, reply) => {
+    if (!allowLocalOnly(req, reply)) return;
+    const resolved = resolveOpenRouterKey();
+    if (!resolved.key) return reply.code(400).send({ error: OPENROUTER_KEY_ABSENT_MESSAGE });
+    return testOpenRouterKey(resolved.key, { fetchImpl: options.keyTestFetch });
   });
 
   return app;

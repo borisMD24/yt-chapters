@@ -14,7 +14,7 @@ Génère des chapitres YouTube à partir :
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | — | clé OpenRouter (chapitrage LLM + STT) |
+| `OPENROUTER_API_KEY` | — | clé OpenRouter (repli : la clé enregistrée dans la base est prioritaire, voir ci-dessous) |
 | `OPENROUTER_MODEL` | `qwen/qwen3.5-27b` | modèle de chapitrage |
 | `STT_MODEL` | `openai/whisper-large-v3-turbo` | modèle de transcription |
 | `CHUNK_SEC` | `300` | longueur des chunks audio (secondes) |
@@ -24,6 +24,51 @@ Génère des chapitres YouTube à partir :
 | `MEDIA_DIR` | deux niveaux au-dessus du projet | dossier scanné par l'interface (fichiers audio/vidéo) |
 | `UPLOAD_MAX_MB` | `2048` | plafond d'un fichier envoyé depuis la page (Mo) |
 | `CHAPTER_MIN_GAP_SEC` | `180` | espacement minimal entre chapitres locaux (secondes) |
+
+## Clé OpenRouter : la base d'abord, puis le `.env`
+
+La clé qui sert au chapitrage LLM **et** à la transcription (STT) est résolue par
+**un seul** ordre de priorité :
+
+1. la clé **enregistrée dans la base** (table `app_settings`), si elle est
+   exploitable ;
+2. sinon la variable `OPENROUTER_API_KEY` du `.env`, si elle est exploitable ;
+3. sinon **aucune** clé : le chapitrage s'arrête **avant tout appel réseau** avec
+   un message actionnable (au lieu d'un 401 ambigu attribué à la mauvaise phase).
+
+Plus besoin de toucher au `.env` : ouvrez la section d'administration.
+
+### Section d'administration (`/admin`)
+
+- **Statut de la clé** : configurée / absente / refusée, avec **la source**
+  (base ou `.env`), un **masque** court (`sk-or-…3f9a`) et la date de dernière
+  mise à jour. La clé n'est **jamais** réaffichée en entier, ni renvoyée par une
+  route, ni journalisée.
+- **Enregistrer** : la clé collée est jugée par les mêmes règles que la
+  disponibilité (vide, trop courte ou restée à un exemple → refus en français).
+  Le client de transcription/LLM est **reconstruit** dès que la clé change : aucun
+  client périmé ne conserve l'ancienne valeur.
+- **Supprimer la clé** : retour au `.env` s'il existe.
+- **Tester la clé** : appelle `GET /api/v1/key` d'OpenRouter (aucun jeton
+  consommé) et affiche un verdict français — valide (avec utilisation/limite/
+  restant si fournis), refusée, crédit insuffisant, débit limité, ou injoignable.
+- **Outils et dossiers** : ffmpeg/ffprobe (versions), dossier des médias (avec
+  avertissement s'il est introuvable), plafond d'envoi, chemin de la base.
+
+Les actions d'**écriture** (enregistrer, supprimer, tester) ne sont possibles
+que depuis **cet ordinateur** (boucle locale `127.0.0.1`/`::1`) ; toute autre
+adresse reçoit un `403` en français. La lecture (`GET /admin/settings`) reste
+ouverte mais ne révèle jamais la clé.
+
+> ⚠️ **Stockage en clair.** La clé est écrite **en clair dans le fichier de base
+> SQLite local** — le même niveau de protection que le fichier `.env` qu'elle
+> remplace. Ne partagez pas ce fichier (ni une sauvegarde qui le contient) et ne
+> le versionnez pas.
+
+La table `app_settings` est créée de deux façons : par `npm run db:push` (le
+schéma Drizzle reste la source de vérité) **et** de façon idempotente au
+démarrage. Un `db:push` oublié n'entraîne donc pas d'erreur SQL : la page
+d'administration fonctionne quand même.
 
 ## Utiliser l'interface (sans ligne de commande)
 
@@ -107,6 +152,15 @@ n'est pas concerné.
 - `DELETE /local/jobs/:id` — annule le job.
 - `GET /local/history` — derniers chapitrages locaux (id, titre, nb de chapitres, date).
 - `GET /videos/:id/export` — description au format YouTube + avertissements
+- `GET /admin` — page d'administration (clé OpenRouter, outils, chemins).
+- `GET /admin/settings` — état (clé masquée, outils, dossier des médias, plafond,
+  base). Ne renvoie jamais la clé.
+- `PUT /admin/openrouter-key` `{ key }` — enregistre la clé (refus en français si
+  vide / trop courte / restée à un exemple).
+- `DELETE /admin/openrouter-key` — supprime la clé enregistrée (repli `.env`).
+- `POST /admin/openrouter-key/test` — teste la clé effective (`GET /api/v1/key`,
+  aucun jeton consommé) et renvoie un verdict français.
+  Les trois dernières routes sont **réservées à la boucle locale** (`403` sinon).
 
 ## CLI (média local)
 

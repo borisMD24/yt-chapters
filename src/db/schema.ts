@@ -26,6 +26,20 @@ export const segments = sqliteTable(
   (t) => ({ byVideo: index('seg_video_idx').on(t.videoId, t.startSec) }),
 );
 
+/**
+ * Réglages applicatifs clé/valeur (ex. la clé OpenRouter). Le schéma Drizzle est
+ * la source de vérité déclarée ; la MÊME définition est rejouée de façon
+ * idempotente au démarrage (`src/db/app-settings.ts`) pour qu'un `db:push`
+ * oublié n'entraîne pas une erreur SQL brute dans la section d'administration.
+ */
+export const appSettings = sqliteTable('app_settings', {
+  id: text('id').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' })
+    .notNull()
+    .default(sql`(unixepoch())`),
+});
+
 export const chapters = sqliteTable(
   'chapters',
   {
