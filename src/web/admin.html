@@ -351,6 +351,11 @@
           <div id="key-message" class="banner" role="status" aria-live="polite" hidden>
             <p id="key-message-text"></p>
           </div>
+
+          <p id="key-provisioning-note" class="help">
+            Attention : une clé d'administration (« provisioning ») ne peut pas transcrire — pour transcrire, utilisez
+            une clé d'API normale créée sur openrouter.ai/settings/keys.
+          </p>
         </div>
 
         <div class="banner warn">
@@ -576,7 +581,11 @@
 
         els.test.addEventListener('click', function () {
           action('/admin/openrouter-key/test', { method: 'POST' }, function (data) {
-            setMessage(data.message || 'Test terminé.', data.ok ? 'ok' : 'err');
+            var text = data.message || 'Test terminé.';
+            // Verdict enrichi : on ajoute la date d'expiration quand OpenRouter
+            // la fournit (clé expirée ou à expiration proche).
+            if (data.expiresAt) text += ' Expire le ' + formatDate(data.expiresAt) + '.';
+            setMessage(text, data.ok ? 'ok' : 'err');
             if (data.ok && data.usage !== undefined) {
               els.messageText.textContent +=
                 ' Utilisation : ' + data.usage + (data.limit !== undefined ? ' / ' + data.limit : '') + (data.remaining !== undefined ? ' (restant ' + data.remaining + ')' : '');

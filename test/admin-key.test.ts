@@ -394,12 +394,16 @@ test('sans aucune clé : le job échoue AVANT tout appel réseau', async () => {
 
 // ---------- 6. test de clé (verdicts) ----------
 
-test('POST /admin/openrouter-key/test : 200, 401, 402, 429 et injoignable', async () => {
+test('POST /admin/openrouter-key/test : ok, refus d’inférence, 402, 429 et injoignable', async () => {
   const app = await getApp();
   const mod = await key();
   await resetKey();
   mod.storeOpenRouterKey(KEY_A);
 
+  // NB : ces verdicts ont changé volontairement — l'endpoint ne se contente plus
+  // de `GET /key` (qui disait « valide » pour une clé d'administration) mais
+  // sonde aussi l'inférence. Les cas provisioning / inference-refused / expired
+  // sont couverts en détail dans `test/key-probe.test.ts`.
   const cases: { name: string; fetch: typeof fetch; verdict: string; ok: boolean; expect?: (body: any) => void }[] = [
     {
       name: 'valide',
@@ -408,7 +412,7 @@ test('POST /admin/openrouter-key/test : 200, 401, 402, 429 et injoignable', asyn
           status: 200,
           headers: { 'content-type': 'application/json' },
         })) as typeof fetch,
-      verdict: 'valid',
+      verdict: 'ok',
       ok: true,
       expect: (body) => {
         assert.equal(body.usage, 1.5);
@@ -416,14 +420,14 @@ test('POST /admin/openrouter-key/test : 200, 401, 402, 429 et injoignable', asyn
         assert.equal(body.remaining, 8.5);
       },
     },
-    { name: 'refusée', fetch: (async () => new Response('', { status: 401 })) as typeof fetch, verdict: 'refused', ok: false },
+    { name: 'refusée', fetch: (async () => new Response('', { status: 401 })) as typeof fetch, verdict: 'inference-refused', ok: false },
     {
       name: 'crédit insuffisant',
       fetch: (async () => new Response('', { status: 402 })) as typeof fetch,
-      verdict: 'insufficient_credit',
+      verdict: 'no-credit',
       ok: false,
     },
-    { name: 'débit limité', fetch: (async () => new Response('', { status: 429 })) as typeof fetch, verdict: 'rate_limited', ok: false },
+    { name: 'débit limité', fetch: (async () => new Response('', { status: 429 })) as typeof fetch, verdict: 'rate-limited', ok: false },
     {
       name: 'injoignable',
       fetch: (async () => {

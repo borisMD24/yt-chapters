@@ -17,6 +17,13 @@ export type JobPhase = 'chunking' | 'transcribing' | 'chaptering' | 'persisting'
  */
 export const OPENROUTER_KEY_MISSING_MESSAGE =
   "La clé OpenRouter est manquante ou refusée. Enregistrez une clé valide dans la page Administration (/admin).";
+/**
+ * Cause spécifique : un 401 qui dit « User not found ». OpenRouter renvoie ce
+ * même code pour une clé d'administration (provisioning), une clé expirée ou une
+ * clé révoquée ; le message générique de clé manquante serait trompeur.
+ */
+export const OPENROUTER_KEY_INFERENCE_REFUSED_MESSAGE =
+  "OpenRouter refuse cette clé pour transcrire (réponse 401 « User not found »). Trois causes possibles : c'est une clé d'administration (elle sert à administrer des clés, pas à transcrire), elle a expiré, ou elle a été révoquée. Vérifiez-la sur openrouter.ai/settings/keys, puis enregistrez une clé d'API normale dans la page Administration (/admin).";
 export const OPENROUTER_CREDIT_MESSAGE = 'Crédit OpenRouter insuffisant pour transcrire ce fichier.';
 export const OPENROUTER_RATE_LIMIT_MESSAGE = "Trop de requêtes envoyées à OpenRouter d'un coup. Réessayez dans une minute.";
 
@@ -174,6 +181,10 @@ export function friendlyErrorMessage(err: unknown): string {
   // (fichier muet, illisible, ffmpeg absent) : on le renvoie tel quel.
   if (err instanceof MediaValidationError) return err.message;
   const raw = err instanceof Error ? err.message : String(err);
+  // 401 « User not found » : cause spécifique (clé d'administration, expirée ou
+  // révoquée) AVANT le message générique de clé — sinon l'utilisateur ne voit
+  // qu'une clé « manquante » alors qu'elle est bien enregistrée.
+  if (/user not found/i.test(raw)) return OPENROUTER_KEY_INFERENCE_REFUSED_MESSAGE;
   // Clé absente ou refusée : 401/403, en-tête d'authentification manquant, ou
   // garde-fou local (`OPENROUTER_API_KEY manquante`). Sans cela, l'utilisateur
   // ne voyait qu'un « réessayez » alors que réessayer ne peut pas marcher.

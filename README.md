@@ -49,9 +49,18 @@ Plus besoin de toucher au `.env` : ouvrez la section d'administration.
   Le client de transcription/LLM est **reconstruit** dès que la clé change : aucun
   client périmé ne conserve l'ancienne valeur.
 - **Supprimer la clé** : retour au `.env` s'il existe.
-- **Tester la clé** : appelle `GET /api/v1/key` d'OpenRouter (aucun jeton
-  consommé) et affiche un verdict français — valide (avec utilisation/limite/
-  restant si fournis), refusée, crédit insuffisant, débit limité, ou injoignable.
+- **Tester la clé** : en **deux temps** — `GET /api/v1/key` pour l'état du compte
+  (utilisation/limite/restant, date d'expiration, drapeaux d'administration),
+  puis une **vraie sonde d'inférence minimale** (`POST /chat/completions` avec le
+  modèle de chapitrage et `max_tokens: 1`, jamais d'audio) — et affiche un verdict
+  français : `ok`, `provisioning`, `inference-refused`, `expired`, `no-credit`,
+  `rate-limited` ou `unreachable`. Le test n'est lancé que sur demande explicite
+  (bouton), jamais au chargement de la page, et jamais sans clé configurée.
+  > ⚠️ Une clé **d'administration** (dite « provisioning/management ») est
+  > acceptée par `GET /key` mais **ne peut pas transcrire** : OpenRouter refuse
+  > l'inférence (`401 « User not found »`, le même code qu'une clé expirée ou
+  > révoquée). Pour transcrire, utilisez une **clé d'API normale** créée sur
+  > <https://openrouter.ai/settings/keys>.
 - **Outils et dossiers** : ffmpeg/ffprobe (versions), dossier des médias (avec
   avertissement s'il est introuvable), plafond d'envoi, chemin de la base.
 
@@ -158,8 +167,12 @@ n'est pas concerné.
 - `PUT /admin/openrouter-key` `{ key }` — enregistre la clé (refus en français si
   vide / trop courte / restée à un exemple).
 - `DELETE /admin/openrouter-key` — supprime la clé enregistrée (repli `.env`).
-- `POST /admin/openrouter-key/test` — teste la clé effective (`GET /api/v1/key`,
-  aucun jeton consommé) et renvoie un verdict français.
+- `POST /admin/openrouter-key/test` — teste la clé effective en deux temps
+  (`GET /api/v1/key` pour l'état du compte, puis une sonde d'inférence minimale
+  `POST /chat/completions`, `max_tokens: 1`, jamais d'audio) et renvoie un verdict
+  français. Une clé **d'administration** (provisioning/management) est signalée
+  comme inapte à la transcription : utilisez une clé d'API normale
+  (<https://openrouter.ai/settings/keys>).
   Les trois dernières routes sont **réservées à la boucle locale** (`403` sinon).
 
 ## CLI (média local)

@@ -11,7 +11,7 @@ import { and, asc, desc, eq, like, sql } from 'drizzle-orm';
 import { db, dbPath } from './db';
 import { videos, segments, chapters } from './db/schema';
 import { fetchMeta, fetchTranscript, listChannelVideos } from './youtube';
-import { proposeChapters, buildWarnings, chaptersToText } from './chapters';
+import { proposeChapters, buildWarnings, chaptersToText, LLM_MODEL } from './chapters';
 import { generateLocalChapters, persistLocalChapters } from './local-chapters';
 import { createJobRegistry, type JobFailureLogger, type JobInput, type JobPipeline } from './jobs';
 import { MEDIA_EXTENSIONS, UploadError, saveUpload, sweepStaleUploads } from './upload';
@@ -675,12 +675,17 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     return { openrouterKey: openRouterKeyReport() };
   });
 
-  // Test « à blanc » : `GET /api/v1/key` d'OpenRouter (aucun jeton consommé).
+  // Test de clé en DEUX temps, uniquement sur demande explicite (bouton) :
+  // `GET /api/v1/key` pour l'état du compte, puis une VRAIE sonde d'inférence
+  // minimale (`POST /chat/completions`, `max_tokens: 1`, jamais d'audio) avec le
+  // modèle de chapitrage de l'app — seule façon de prouver que la clé peut
+  // réellement transcrire/chapitrer (une clé d'administration authentifie le
+  // compte mais se fait refuser l'inférence). Aucun appel si aucune clé.
   app.post('/admin/openrouter-key/test', async (req, reply) => {
     if (!allowLocalOnly(req, reply)) return;
     const resolved = resolveOpenRouterKey();
     if (!resolved.key) return reply.code(400).send({ error: OPENROUTER_KEY_ABSENT_MESSAGE });
-    return testOpenRouterKey(resolved.key, { fetchImpl: options.keyTestFetch });
+    return testOpenRouterKey(resolved.key, { fetchImpl: options.keyTestFetch, model: LLM_MODEL });
   });
 
   return app;
