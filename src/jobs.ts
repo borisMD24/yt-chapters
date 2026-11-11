@@ -86,16 +86,21 @@ function messageFor(job: Job): string {
 
 /**
  * Retire tout secret (clés OpenRouter, tokens Bearer) ET tout chemin de fichier
- * absolu (lecteur Windows `C:\…`, UNC `\\serveur\partage\…`, POSIX `/home/…`)
- * d'un message d'erreur destiné au navigateur.
+ * absolu (lecteur Windows `C:\…`, UNC `\\serveur\partage\…`, POSIX des racines
+ * usuelles) d'un message d'erreur destiné au navigateur.
+ *
+ * Les chemins sont consommés jusqu'à un terminateur (fin de ligne, `:`, `(`,
+ * `)`, `"`, `'`) **espaces compris** : sinon un dossier comme « Mes documents »
+ * ferait fuiter la fin du chemin. La règle POSIX est limitée aux racines
+ * connues pour ne pas abîmer un texte courant comme `12/03/2024`.
  */
 export function sanitizeErrorMessage(message: string): string {
   return message
     .replace(/sk-[A-Za-z0-9_-]{6,}/g, 'sk-***')
     .replace(/Bearer\s+[A-Za-z0-9._-]{6,}/gi, 'Bearer ***')
-    .replace(/\\\\[^\s"']+/g, '<chemin>')
-    .replace(/[A-Za-z]:\\[^\s"']*/g, '<chemin>')
-    .replace(/\/(?:[^\s"'/]+\/)+[^\s"']*/g, '<chemin>')
+    .replace(/\\\\[^:"'()\n]*/g, '<chemin>')
+    .replace(/[A-Za-z]:\\[^:"'()\n]*/g, '<chemin>')
+    .replace(/\/(?:home|Users|tmp|mnt|var|opt)\/[^:"'()\n]*/g, '<chemin>')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 400);

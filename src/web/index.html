@@ -854,14 +854,29 @@
         function pollJob() {
           if (!state.jobId) return;
           fetch('/local/jobs/' + encodeURIComponent(state.jobId))
-            .then((r) => r.json())
+            .then((r) => {
+              // Un job peut disparaître (évincé) : on ne doit jamais rester
+              // bloqué sur « Traitement… » avec le bouton désactivé.
+              if (!r.ok) {
+                var err = new Error(r.status === 404 ? 'job-indisponible' : 'http-' + r.status);
+                err.httpStatus = r.status;
+                throw err;
+              }
+              return r.json();
+            })
             .then((job) => {
               applyJob(job);
               if (job.status === 'queued' || job.status === 'running') {
                 state.timer = setTimeout(pollJob, 1000);
               }
             })
-            .catch(() => {
+            .catch((err) => {
+              if (err && err.message === 'job-indisponible') {
+                finishWithError(
+                  "Ce chapitrage n'est plus disponible (il a peut-être été lancé il y a trop longtemps). Relancez-le : vos fichiers n'ont pas été modifiés.",
+                );
+                return;
+              }
               finishWithError("Impossible de suivre la progression. Vérifiez que l'outil est toujours démarré.");
             });
         }

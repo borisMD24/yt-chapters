@@ -148,21 +148,38 @@ test('getJob renvoie undefined pour un identifiant inconnu', () => {
   assert.equal(registry.cancelJob('inexistant'), undefined);
 });
 
-test('sanitizeErrorMessage masque clés, chemins Windows, UNC et POSIX', () => {
-  const ffmpeg =
-    'ffmpeg exited with code 1: C:\\Users\\boris\\Vidéos\\reportage final.mp4: Invalid data found when processing input (sk-or-abcd1234efgh)';
-  const out = sanitizeErrorMessage(ffmpeg);
-  assert.ok(!out.includes('boris'), 'le chemin Windows ne doit pas fuiter');
-  assert.ok(!out.includes('reportage final'), 'le nom de fichier ne doit pas fuiter');
-  assert.ok(out.includes('<chemin>'));
-  assert.ok(!out.includes('sk-or-abcd1234efgh'));
+test('sanitizeErrorMessage masque clés et chemins COMPLETS (dossiers à espaces inclus)', () => {
+  const spaced =
+    'ffmpeg exited with code 1: C:\\Users\\Boris\\Mes documents\\clip final.mp4: Invalid data found when processing input';
+  const out = sanitizeErrorMessage(spaced);
+  assert.ok(!/Mes documents/.test(out), 'le dossier à espace ne doit pas fuiter');
+  assert.ok(!/clip final/.test(out), 'le nom de fichier ne doit pas fuiter');
+  assert.ok(!/\.mp4/.test(out), "l'extension ne doit pas fuiter");
+  assert.equal(out, 'ffmpeg exited with code 1: <chemin>: Invalid data found when processing input');
 
-  const unc = sanitizeErrorMessage("Impossible de lire \\\\nas\\partage\\entretien.mp4 (EACCES)");
-  assert.ok(!unc.includes('partage'), 'le chemin UNC ne doit pas fuiter');
+  // Un chemin à espaces, seul, doit être entièrement remplacé.
+  assert.equal(sanitizeErrorMessage('C:\\Users\\Boris\\Mes documents\\clip final.mp4'), '<chemin>');
+
+  const withKey = sanitizeErrorMessage('C:\\m\\reportage final.mp4 (sk-or-abcd1234efgh)');
+  assert.ok(!/reportage/.test(withKey), 'le nom doit être masqué même suivi d\'un secret');
+  assert.ok(!/\.mp4/.test(withKey));
+  assert.ok(!withKey.includes('sk-or-abcd1234efgh'));
+  assert.ok(withKey.includes('<chemin>'));
+
+  const unc = sanitizeErrorMessage('Impossible de lire \\\\nas\\partage\\entretien final.mp4 (EACCES)');
+  assert.ok(!/partage/.test(unc), 'le chemin UNC ne doit pas fuiter');
+  assert.ok(!/\.mp4/.test(unc), "l'extension UNC ne doit pas fuiter");
   assert.ok(unc.includes('<chemin>'));
 
-  const posix = sanitizeErrorMessage('probe failed for /home/boris/medias/a.mp3');
-  assert.ok(!posix.includes('/home/boris'), 'le chemin POSIX ne doit pas fuiter');
+  const posix = sanitizeErrorMessage('probe failed for /home/boris/mes medias/a.mp3');
+  assert.ok(!/\/home/.test(posix), 'le chemin POSIX ne doit pas fuiter');
+  assert.ok(!/\.mp3/.test(posix), "l'extension POSIX ne doit pas fuiter");
+});
+
+test('sanitizeErrorMessage ne mutile pas un texte courant (dates, parenthèses)', () => {
+  assert.equal(sanitizeErrorMessage('Enregistré le 12/03/2024 à 14:30'), 'Enregistré le 12/03/2024 à 14:30');
+  assert.equal(sanitizeErrorMessage('Échec du chapitrage (code 1)'), 'Échec du chapitrage (code 1)');
+  assert.equal(sanitizeErrorMessage('Durée 00:12:30 dépassée'), 'Durée 00:12:30 dépassée');
 });
 
 test('les jobs terminés sont évincés au-delà du plafond (le plus récent est gardé)', async () => {
