@@ -22,24 +22,43 @@ Génère des chapitres YouTube à partir :
 | `DB_PATH` | `data/chapters.db` | base SQLite |
 | `PORT` | `3000` | port HTTP |
 | `MEDIA_DIR` | deux niveaux au-dessus du projet | dossier scanné par l'interface (fichiers audio/vidéo) |
+| `UPLOAD_MAX_MB` | `2048` | plafond d'un fichier envoyé depuis la page (Mo) |
 
 ## Utiliser l'interface (sans ligne de commande)
 
 1. Démarrez le serveur : `npm start` (le port par défaut est `3000`).
 2. Ouvrez <http://localhost:3000/> dans un navigateur.
-3. Choisissez un fichier de votre dossier de médias, cliquez sur
-   **Générer les chapitres**, suivez la progression, puis cliquez sur
-   **Copier pour YouTube** et collez le texte dans la description de la vidéo.
+3. Cliquez sur **Choisir un fichier** (ou glissez-déposez le fichier sur la
+   zone prévue), puis **Générer les chapitres**. Suivez la progression, puis
+   cliquez sur **Copier pour YouTube** et collez le texte dans la description
+   de la vidéo.
 
-La page liste automatiquement les fichiers du dossier `MEDIA_DIR` (si la
-variable est absente, le dossier situé deux niveaux au-dessus du projet).
-Elle fonctionne hors-ligne : aucun CDN, aucune police externe, aucun build.
+La page propose trois sources, exclusives l'une de l'autre :
+
+- **envoyer un fichier** de l'ordinateur (voie principale) : le navigateur
+  transmet le fichier au serveur, qui l'écrit dans un **dossier temporaire
+  privé** (`ckr-upload-…` sous le dossier temporaire du système) ;
+- **un fichier déjà présent** dans `MEDIA_DIR` (liste déroulante) ;
+- **un chemin saisi** à la main (repli).
+
+Un envoi est **transitoire** : le fichier temporaire (et son dossier) est
+supprimé dès que le chapitrage est terminé, en erreur ou annulé. Rien n'est
+écrit dans le dépôt. Deux envois du **même contenu** réutilisent la même ligne
+d'historique (identifiant dérivé du fichier, `local:up-<empreinte>`).
+
+La page fonctionne hors-ligne : aucun CDN, aucune police externe, aucun build.
 
 - Progression suivie côté navigateur (`GET /local/jobs/:id`, sondage ~1 s),
   bouton **Annuler** (`DELETE /local/jobs/:id`).
+- Envoi d'un fichier : `POST /local/jobs/upload` (corps brut
+  `application/octet-stream`, nom d'origine dans l'en-tête `x-filename`
+  encodé, options en paramètres de requête). Réponses : `202` avec `jobId`,
+  `413` si le plafond `UPLOAD_MAX_MB` est dépassé, `415` si le format n'est
+  pas accepté.
 - Résultat copiable, téléchargeable en `.txt`, avec les avertissements YouTube
   en clair (ex. « Il faudrait au moins 3 chapitres »).
 - « Derniers chapitrages » reprend les générations locales récentes.
+
 
 
 ## API
@@ -51,6 +70,8 @@ Elle fonctionne hors-ligne : aucun CDN, aucune police externe, aucun build.
   Persiste une ligne `videos` (id synthétique `local:<sha1 du chemin absolu, 16 hex>`)
   et les chapitres générés (`source = llm`) dans une transaction.
 - `GET /` — page d'interface (HTML autonome, en français).
+- `POST /local/jobs/upload` — envoi d'un fichier (corps brut, `x-filename`
+  encodé, `chunkSec`/`lang`/`maxChunks` en requête) → `202 { jobId }`.
 - `GET /local/media` — fichiers audio/vidéo de `MEDIA_DIR` (`{ dir, files, hint? }`).
 - `POST /local/jobs` — démarre un job (`202 { jobId }`) ; le chemin doit être un
   fichier de `MEDIA_DIR` (sinon `400`/`404`).

@@ -14,6 +14,13 @@ export type JobInput = {
   chunkSec?: number;
   lang?: string;
   maxChunks?: number;
+  /** Identifiant de vidéo imposé (envoi de fichier) au lieu de l'id dérivé du chemin. */
+  videoId?: string;
+  /**
+   * Nettoyage appelé exactement une fois quand le job atteint un état terminal
+   * (done, error, cancelled). Sert à supprimer le fichier temporaire d'un envoi.
+   */
+  onFinished?: () => void | Promise<void>;
 };
 
 export type JobChapter = { startSec: number; title: string };
@@ -159,7 +166,21 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
   }
 
   async function run(job: Job, input: JobInput, signal: AbortSignal): Promise<void> {
+    // Le nettoyage (fichier temporaire d'un envoi) doit avoir lieu exactement
+    // une fois, quel que soit l'état terminal atteint.
+    let finalized = false;
+    const finalize = async (): Promise<void> => {
+      if (finalized) return;
+      finalized = true;
+      try {
+        await input.onFinished?.();
+      } catch {
+        /* nettoyage au mieux : ne doit jamais masquer l'état du job */
+      }
+    };
+
     if (job.status === 'cancelled') {
+      await finalize();
       releaseFinished(job);
       return;
     }
@@ -179,6 +200,9 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
           job.message = messageFor(job);
         },
       });
+      // Le nettoyage a lieu AVANT d'exposer l'état terminal : un observateur ne
+      // peut pas voir « terminé » alors que le fichier temporaire existe encore.
+      await finalize();
       if (signal.aborted) {
         job.status = 'cancelled';
         job.message = 'Annulé.';
@@ -192,16 +216,11 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
       job.message = 'Chapitres prêts.';
       releaseFinished(job);
     } catch (err) {
-      if (signal.aborted) {
-        job.status = 'cancelled';
-        job.message = 'Annulé.';
-        job.error = undefined;
-        releaseFinished(job);
-        return;
-      }
-      job.status = 'error';
-      job.message = friendlyErrorMessage(err);
-      job.error = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+      const cancelled = signal.aborted;
+      job.error = cancelled ? undefined : sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+      job.message = cancelled ? 'Annulé.' : friendlyErrorMessage(err);
+      await finalize();
+      job.status = cancelled ? 'cancelled' : 'error';
       releaseFinished(job);
     }
   }

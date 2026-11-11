@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
+import type { Readable } from 'node:stream';
 import { and, asc, desc, eq, like, sql } from 'drizzle-orm';
 import { db } from './db';
 import { videos, segments, chapters } from './db/schema';
@@ -13,6 +14,11 @@ import { fetchMeta, fetchTranscript, listChannelVideos } from './youtube';
 import { proposeChapters, buildWarnings, chaptersToText } from './chapters';
 import { generateLocalChapters, persistLocalChapters } from './local-chapters';
 import { createJobRegistry, type JobInput, type JobPipeline } from './jobs';
+import { MEDIA_EXTENSIONS, UploadError, saveUpload } from './upload';
+
+// Une seule source de vérité pour les extensions acceptées (liste MEDIA_DIR
+// et envoi de fichier).
+export { MEDIA_EXTENSIONS } from './upload';
 
 export type AppOptions = {
   /** Pipeline de chapitrage injectable (tests) ; par défaut, le pipeline réel. */
@@ -25,22 +31,6 @@ const idParam = z.object({ id: z.string().min(1) });
 const numId = z.object({ id: z.coerce.number().int() });
 
 // ---------- média local : dossier, liste, garde-fous ----------
-
-/** Extensions considérées comme des médias exploitables. */
-export const MEDIA_EXTENSIONS = [
-  '.mp3',
-  '.m4a',
-  '.wav',
-  '.flac',
-  '.ogg',
-  '.opus',
-  '.aac',
-  '.mp4',
-  '.mkv',
-  '.mov',
-  '.webm',
-  '.avi',
-] as const;
 
 const MEDIA_EXT_SET = new Set<string>(MEDIA_EXTENSIONS);
 
@@ -98,6 +88,11 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     app.log.error(err);
     return reply.code(500).send({ error: err instanceof Error ? err.message : 'internal error' });
   });
+
+  // Envoi de fichier : le corps brut (flux) est remis tel quel à la route, qui
+  // l'écrit au fur et à mesure. Aucun tamponnage mémoire, donc aucune limite
+  // implicite de Fastify : le plafond est appliqué par `saveUpload`.
+  app.addContentTypeParser('application/octet-stream', (_req, payload, done) => done(null, payload));
 
   // ---------- helpers ----------
 
@@ -292,6 +287,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       chunkSec: input.chunkSec,
       lang: input.lang,
       maxChunks: input.maxChunks,
+      videoId: input.videoId,
       onProgress,
       signal,
     });
@@ -357,6 +353,19 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     maxChunks: z.number().int().positive().optional(),
   });
 
+  // Options d'un envoi : passées en paramètres de requête (le corps est le fichier).
+  const uploadQuery = z.object({
+    chunkSec: z.coerce.number().int().positive().optional(),
+    lang: z.string().min(2).optional(),
+    maxChunks: z.coerce.number().int().positive().optional(),
+  });
+
+  /** Plafond d'un envoi : `UPLOAD_MAX_MB` (défaut 2048 Mo). */
+  function uploadMaxBytes(): number {
+    const mb = Number(process.env.UPLOAD_MAX_MB);
+    return (Number.isFinite(mb) && mb > 0 ? mb : 2048) * 1024 * 1024;
+  }
+
   // Démarre un job (page) : le chemin doit être un fichier de MEDIA_DIR.
   app.post('/local/jobs', async (req, reply) => {
     const body = jobInput.parse(req.body);
@@ -383,6 +392,51 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       maxChunks: body.maxChunks,
     };
     const job = registry.createJob(input);
+    return reply.code(202).send({ jobId: job.id });
+  });
+
+  // Envoi de fichier : le corps est le fichier brut (`application/octet-stream`),
+  // le nom d'origine arrive encodé dans l'en-tête `x-filename`, les options dans
+  // la requête. Le fichier est écrit dans un dossier temporaire privé, supprimé
+  // dès que le job atteint un état terminal (succès, erreur ou annulation).
+  app.post('/local/jobs/upload', async (req, reply) => {
+    const query = uploadQuery.parse(req.query);
+
+    const header = req.headers['x-filename'];
+    const rawHeader = Array.isArray(header) ? header[0] : header;
+    if (!rawHeader) {
+      return reply.code(400).send({ error: 'Le nom du fichier est manquant (en-tête « x-filename »).' });
+    }
+    let filename: string;
+    try {
+      filename = decodeURIComponent(rawHeader);
+    } catch {
+      return reply.code(400).send({ error: "Le nom du fichier est illisible (encodage de l'en-tête invalide)." });
+    }
+
+    const body = req.body as unknown;
+    if (!body || typeof (body as { pipe?: unknown }).pipe !== 'function') {
+      return reply
+        .code(415)
+        .send({ error: 'Envoyez le fichier brut avec l\'en-tête « Content-Type: application/octet-stream ».' });
+    }
+
+    let saved;
+    try {
+      saved = await saveUpload(body as Readable, { filename, maxBytes: uploadMaxBytes() });
+    } catch (err) {
+      if (err instanceof UploadError) return reply.code(err.status).send({ error: err.message });
+      throw err;
+    }
+
+    const job = registry.createJob({
+      path: saved.path,
+      videoId: `local:up-${saved.sha1.slice(0, 12)}`,
+      chunkSec: query.chunkSec,
+      lang: query.lang,
+      maxChunks: query.maxChunks,
+      onFinished: saved.cleanup,
+    });
     return reply.code(202).send({ jobId: job.id });
   });
 

@@ -17,6 +17,12 @@ export type LocalChaptersOptions = {
   lang?: string;
   maxChunks?: number;
   /**
+   * Identifiant de vidéo à utiliser au lieu de l'id dérivé du chemin (envoi de
+   * fichier : `local:up-<sha1 du contenu>`), afin que deux envois du même
+   * fichier réutilisent la même ligne d'historique.
+   */
+  videoId?: string;
+  /**
    * Progression optionnelle (défaut : silencieux, comportement inchangé).
    * `chunking` est émis avant puis après le passage ffmpeg (nombre de morceaux
    * connu au retour de `chunkToMp3`), `transcribing` après chaque morceau,
@@ -56,7 +62,7 @@ export async function generateLocalChapters(
   opts: LocalChaptersOptions = {},
 ): Promise<LocalChaptersResult> {
   const abs = resolve(input);
-  const videoId = localVideoId(abs);
+  const videoId = opts.videoId && opts.videoId.trim() ? opts.videoId : localVideoId(abs);
   const report = opts.onProgress ?? (() => {});
 
   if (opts.signal?.aborted) throw abortError();
