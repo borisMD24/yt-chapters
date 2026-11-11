@@ -4,7 +4,8 @@ import { and, asc, eq } from 'drizzle-orm';
 import { db } from './db';
 import { videos, segments, chapters } from './db/schema';
 import { fetchMeta, fetchTranscript, listChannelVideos } from './youtube';
-import { proposeChapters, fmtTs, MIN_GAP } from './chapters';
+import { proposeChapters, buildWarnings, chaptersToText } from './chapters';
+import { generateLocalChapters } from './local-chapters';
 
 const app = Fastify({ logger: true });
 
@@ -192,18 +193,59 @@ app.get('/videos/:id/export', async (req) => {
     .orderBy(asc(chapters.startSec))
     .all();
 
-  const warnings: string[] = [];
-  if (chs.length < 3) warnings.push('YouTube exige au moins 3 chapitres');
-  if (chs[0] && chs[0].startSec !== 0) warnings.push('Le premier chapitre doit commencer à 0:00');
-  chs.slice(1).forEach((c, i) => {
-    if (c.startSec - chs[i].startSec < MIN_GAP) {
-      warnings.push(`"${chs[i].title}" dure moins de ${MIN_GAP}s`);
+  const warnings = buildWarnings(chs, { includePending: true });
+  return { text: chaptersToText(chs), warnings };
+});
+
+// ---------- local media ----------
+
+// Chapitrage d'un média LOCAL (vidéo ou audio) : découpe ffmpeg -> STT OpenRouter
+// -> chapitres LLM. Le transcript reste en mémoire (pas d'écriture dans transcript_segments).
+app.post('/local/chapters', async (req) => {
+  const body = z
+    .object({
+      path: z.string().min(1),
+      chunkSec: z.number().int().positive().optional(),
+      lang: z.string().min(2).optional(),
+      maxChunks: z.number().int().positive().optional(),
+    })
+    .parse(req.body);
+
+  const result = await generateLocalChapters(body.path, {
+    chunkSec: body.chunkSec,
+    lang: body.lang,
+    maxChunks: body.maxChunks,
+  });
+
+  // Persiste la vidéo (id synthétique) et les chapitres générés, dans une transaction.
+  db.transaction((tx) => {
+    tx.insert(videos)
+      .values({
+        id: result.videoId,
+        title: result.title,
+        channel: null,
+        durationSec: Math.round(result.durationSec),
+      })
+      .onConflictDoUpdate({
+        target: videos.id,
+        set: { title: result.title, durationSec: Math.round(result.durationSec) },
+      })
+      .run();
+
+    // Remplace les chapitres LLM non validés, comme /videos/:id/chapters/generate.
+    tx.delete(chapters)
+      .where(
+        and(eq(chapters.videoId, result.videoId), eq(chapters.source, 'llm'), eq(chapters.validated, false)),
+      )
+      .run();
+    if (result.chapters.length) {
+      tx.insert(chapters)
+        .values(result.chapters.map((c) => ({ videoId: result.videoId, ...c, source: 'llm' as const })))
+        .run();
     }
   });
-  const pending = chs.filter((c) => !c.validated).length;
-  if (pending) warnings.push(`${pending} chapitre(s) pas encore validé(s)`);
 
-  return { text: chs.map((c) => `${fmtTs(c.startSec)} ${c.title}`).join('\n'), warnings };
+  return { chapters: result.chapters, text: result.text, warnings: result.warnings };
 });
 
 const port = Number(process.env.PORT ?? 3000);

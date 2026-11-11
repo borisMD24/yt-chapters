@@ -1,0 +1,76 @@
+// Tests du découpage audio : offsets réels (somme des durées) et intégration ffmpeg.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { computeChunkOffsets, probeDurationSec, chunkToMp3 } from '../src/audio.ts';
+
+const run = promisify(execFile);
+
+test('computeChunkOffsets cumule les durées réelles (dérive != 300s)', () => {
+  // On ne doit jamais supposer index * 300 : les durées mesurées dérivent.
+  const offsets = computeChunkOffsets([301.2, 298.7, 300.0, 12.5]);
+  assert.equal(offsets.length, 4);
+  assert.equal(offsets[0], 0);
+  const r1 = (n: number) => Math.round(n * 10) / 10;
+  assert.equal(r1(offsets[1]), 301.2);
+  assert.equal(r1(offsets[2]), 599.9);
+  assert.equal(r1(offsets[3]), 899.9);
+});
+
+test('computeChunkOffsets gère la liste vide', () => {
+  assert.deepEqual(computeChunkOffsets([]), []);
+});
+
+test('INTEGRATION: chunkToMp3 découpe un mp3 synthétique et démarre à 0', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'ytc-audio-test-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  // Audio réel de 7s via lavfi (sine 440Hz).
+  const src = join(dir, 'src.mp3');
+  await run('ffmpeg', ['-hide_banner', '-nostdin', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=7', '-ac', '1', src]);
+
+  const duration = await probeDurationSec(src);
+  assert.ok(duration > 6 && duration < 9, `durée inattendue: ${duration}`);
+
+  // chunkSec par défaut (300s) => un seul chunk, offset 0.
+  const single = await chunkToMp3(src);
+  try {
+    assert.equal(single.chunks.length, 1);
+    assert.equal(single.chunks[0].startSec, 0);
+    assert.ok(single.chunks[0].durationSec > 6);
+  } finally {
+    await single.cleanup();
+  }
+
+  // chunkSec=3 => 3 chunks, offsets croissants démarrant à 0.
+  const cut = await chunkToMp3(src, { chunkSec: 3 });
+  try {
+    assert.equal(cut.chunks.length, 3);
+    assert.equal(cut.chunks[0].startSec, 0);
+    assert.ok(cut.chunks[1].startSec >= 2.5 && cut.chunks[1].startSec <= 3.5, `offset1=${cut.chunks[1].startSec}`);
+    assert.ok(cut.chunks[2].startSec >= 5.5 && cut.chunks[2].startSec <= 6.5, `offset2=${cut.chunks[2].startSec}`);
+    // Les offsets sont la somme des durées réelles, pas index * 3.
+    assert.equal(cut.chunks[1].startSec, cut.chunks[0].durationSec);
+  } finally {
+    await cut.cleanup();
+  }
+});
+
+test('INTEGRATION: maxChunks borne le nombre de chunks produits', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'ytc-audio-max-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const src = join(dir, 'src.mp3');
+  await run('ffmpeg', ['-hide_banner', '-nostdin', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=7', '-ac', '1', src]);
+
+  const cut = await chunkToMp3(src, { chunkSec: 2, maxChunks: 2 });
+  try {
+    assert.equal(cut.chunks.length, 2);
+    assert.equal(cut.chunks[0].startSec, 0);
+  } finally {
+    await cut.cleanup();
+  }
+});

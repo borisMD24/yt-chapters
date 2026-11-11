@@ -6,7 +6,9 @@
     "dev": "tsx watch --env-file=.env src/server.ts",
     "start": "tsx --env-file=.env src/server.ts",
     "db:push": "drizzle-kit push",
-    "typecheck": "tsc --noEmit"
+    "chapters": "tsx --env-file=.env src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"test/*.test.ts\""
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
