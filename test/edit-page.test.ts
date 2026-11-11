@@ -180,7 +180,10 @@ test('le texte d’export suit une saisie de titre et d’horodatage', async () 
   page.fire('chapter-list', 'input', { target: { dataset: { index: '1', field: 'title' }, value: 'Partie 2' } });
   assert.ok(page.el('export-text').textContent.includes('1:00 Partie 2'), page.el('export-text').textContent);
 
-  page.fire('chapter-list', 'input', { target: { dataset: { index: '2', field: 'time' }, value: '1:05' } });
+  // Le navigateur enchaîne « input » (frappe) puis « change » (validation).
+  const timeEvent = { target: { dataset: { index: '2', field: 'time' }, value: '1:05' } };
+  page.fire('chapter-list', 'input', timeEvent);
+  page.fire('chapter-list', 'change', timeEvent);
   assert.ok(page.el('export-text').textContent.includes('1:05 Fin'));
 });
 
@@ -188,18 +191,26 @@ test('les règles cassées affichent un avertissement NON bloquant', async () =>
   const page = boot();
   await settle();
 
-  // Deux chapitres à moins de 10 s.
-  page.fire('chapter-list', 'input', { target: { dataset: { index: '2', field: 'time' }, value: '1:05' } });
+  // Deux chapitres à moins de 10 s (frappe puis validation, comme un navigateur).
+  const t2 = { target: { dataset: { index: '2', field: 'time' }, value: '1:05' } };
+  page.fire('chapter-list', 'input', t2);
+  page.fire('chapter-list', 'change', t2);
   assert.equal(page.el('warnings').hidden, false);
   assert.match(page.el('warnings-list').innerHTML, /moins de 10 s/);
 
   // Premier chapitre décalé.
-  page.fire('chapter-list', 'input', { target: { dataset: { index: '0', field: 'time' }, value: '0:05' } });
+  const t0 = { target: { dataset: { index: '0', field: 'time' }, value: '0:05' } };
+  page.fire('chapter-list', 'input', t0);
+  page.fire('chapter-list', 'change', t0);
   assert.match(page.el('warnings-list').innerHTML, /ne commence pas à 0:00/);
 
   // Corrigé : l'avertissement disparaît.
-  page.fire('chapter-list', 'input', { target: { dataset: { index: '0', field: 'time' }, value: '0:00' } });
-  page.fire('chapter-list', 'input', { target: { dataset: { index: '2', field: 'time' }, value: '2:00' } });
+  const t0fix = { target: { dataset: { index: '0', field: 'time' }, value: '0:00' } };
+  const t2fix = { target: { dataset: { index: '2', field: 'time' }, value: '2:00' } };
+  page.fire('chapter-list', 'input', t0fix);
+  page.fire('chapter-list', 'change', t0fix);
+  page.fire('chapter-list', 'input', t2fix);
+  page.fire('chapter-list', 'change', t2fix);
   assert.equal(page.el('warnings').hidden, true);
 });
 
@@ -235,6 +246,25 @@ test('enregistrer appelle PATCH pour un chapitre modifié, POST pour un ajout, D
   assert.deepEqual(JSON.parse(String(posts[0].init!.body)), { startSec: 0, title: 'Nouveau chapitre' });
   assert.deepEqual(deletes.map((c) => c.url), ['/chapters/1']);
   assert.match(page.el('status').textContent, /enregistrées/i);
+});
+
+test('saisir un horodatage ne reconstruit PAS la liste (le champ garde le focus) ; « change » la reconstruit', async () => {
+  const page = boot();
+  await settle();
+  const list = page.el('chapter-list');
+  list.innerHTML = 'SENTINEL';
+
+  // Frappe (input) : la donnée est prise en compte, mais la liste n'est pas
+  // reconstruite — sinon le champ en cours d'édition perdrait le focus.
+  page.fire('chapter-list', 'input', { target: { dataset: { index: '2', field: 'time' }, value: '1:05' } });
+  assert.equal(list.innerHTML, 'SENTINEL', 'aucune reconstruction pendant la frappe');
+  assert.ok(page.el('export-text').textContent.includes('1:05 Fin'), page.el('export-text').textContent);
+
+  // Validation (change) : la liste est reconstruite avec la valeur canonique.
+  page.fire('chapter-list', 'change', { target: { dataset: { index: '2', field: 'time' }, value: '1:05' } });
+  assert.notEqual(list.innerHTML, 'SENTINEL', '« change » reconstruit la liste');
+  assert.equal((list.innerHTML.match(/data-field="time"/g) || []).length, 3);
+  assert.ok(list.innerHTML.includes('1:05'), 'valeur canonique affichée');
 });
 
 test('un identifiant absent de l’adresse est expliqué en français', async () => {

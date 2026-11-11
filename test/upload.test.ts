@@ -262,6 +262,32 @@ test('deux envois du même fichier partagent le même identifiant ET un seul fic
   }
 });
 
+test('le fichier du cache SURVIT à un job en échec (contrat de rétention)', async () => {
+  const failing = async (): Promise<never> => {
+    throw new Error('ffmpeg a échoué');
+  };
+  const app = (await import('../src/app.ts')).createApp({ pipeline: failing, logger: false });
+  const payload = Buffer.from('octets conserves malgre un echec de chapitrage');
+  try {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/local/jobs/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent('echec.mp3') },
+      payload,
+    });
+    assert.equal(res.statusCode, 202);
+    const job = await waitJob(app, (res.json() as { jobId: string }).jobId);
+    assert.equal(job.status, 'error');
+
+    const cached = join(cacheDir, `${sha1(payload)}.mp3`);
+    assert.equal(existsSync(cached), true, 'le média reste disponible pour l’éditeur de bornes');
+    assert.equal(statSync(cached).size, payload.length);
+    assert.deepEqual(cacheFiles().filter((f) => f.startsWith('ckr-part-')), [], 'aucun temporaire');
+  } finally {
+    await app.close();
+  }
+});
+
 test('aucun fichier TEMPORAIRE d’envoi ne subsiste dans le cache à la fin de la série', () => {
   const leftovers = cacheFiles().filter((f) => f.startsWith('ckr-part-'));
   assert.deepEqual(leftovers, [], `fichiers temporaires restants : ${leftovers.join(', ')}`);

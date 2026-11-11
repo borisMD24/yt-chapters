@@ -24,6 +24,12 @@ export const UPLOAD_DIR_PREFIX = 'ckr-upload-';
 /** Préfixe des fichiers TEMPORAIRES d'un envoi en cours (dans le cache). */
 export const UPLOAD_TEMP_PREFIX = 'ckr-part-';
 
+/**
+ * Préfixe d'empreinte accepté pour un identifiant d'envoi : 12 à 40 caractères
+ * hexadécimaux. Un préfixe plus court rendrait le cache énumérable.
+ */
+const CACHE_HASH_PREFIX = /^[0-9a-f]{12,40}$/i;
+
 /** Extensions de médias acceptées (mêmes règles que la liste MEDIA_DIR). */
 export const MEDIA_EXTENSIONS = [
   '.mp3',
@@ -193,9 +199,14 @@ export async function clearUploadCache(): Promise<{ before: CacheStats; after: C
 /**
  * Retrouve un fichier du cache à partir d'un préfixe d'empreinte (identifiant
  * `local:up-<12 hex>`), sans connaître l'extension. `null` si rien ne correspond.
+ *
+ * Le préfixe doit faire **12 à 40** caractères hexadécimaux : un préfixe plus
+ * court rendrait le cache énumérable (un seul caractère suffisait à retrouver un
+ * envoi). Les fichiers TEMPORAIRES (`ckr-part-*`) ne sont jamais servis : ils
+ * sont écartés explicitement (et « c » n'est pas suivi d'hexadécimal).
  */
 export async function findCacheFileByHash(prefix: string): Promise<string | null> {
-  if (!/^[0-9a-f]+$/i.test(prefix)) return null;
+  if (!CACHE_HASH_PREFIX.test(prefix)) return null;
   const dir = uploadCacheDir();
   let entries;
   try {
@@ -206,9 +217,9 @@ export async function findCacheFileByHash(prefix: string): Promise<string | null
   const lower = prefix.toLowerCase();
   for (const entry of entries) {
     if (!entry.isFile()) continue;
-    if (!entry.name.toLowerCase().startsWith(lower)) continue;
+    if (entry.name.startsWith(UPLOAD_TEMP_PREFIX)) continue; // envoi incomplet
     if (!isAllowedMediaName(entry.name)) continue;
-    if (!entry.name.toLowerCase().endsWith(extname(entry.name).toLowerCase())) continue;
+    if (!entry.name.toLowerCase().startsWith(lower)) continue;
     return join(dir, entry.name);
   }
   return null;
@@ -282,12 +293,24 @@ export async function saveUpload(
     const sha1 = hash.digest('hex');
     const finalPath = join(dir, `${sha1}${ext}`);
     // Déduplication : ces octets exacts sont-ils déjà en cache ? Le nom étant
-    // l'empreinte du contenu, la cible ne peut être qu'identique.
-    if (await exists(finalPath)) {
+    // l'empreinte du contenu, la cible ne peut être qu'identique. Seul un
+    // FICHIER compte : un dossier homonyme ne doit pas passer pour un envoi.
+    if (await isFile(finalPath)) {
       await rm(temp, { force: true });
       return { path: finalPath, bytes, sha1, ext, deduplicated: true };
     }
-    await rename(temp, finalPath);
+    try {
+      await rename(temp, finalPath);
+    } catch (err) {
+      // Course avec un envoi identique : le fichier est apparu entre le test
+      // ci-dessus et le rename. On renvoie le résultat DÉDUPLIQUÉ (jamais
+      // l'erreur de fichier, qui serait un faux « nom trop long ou invalide »).
+      if (await isFile(finalPath)) {
+        await rm(temp, { force: true });
+        return { path: finalPath, bytes, sha1, ext, deduplicated: true };
+      }
+      throw err;
+    }
     return { path: finalPath, bytes, sha1, ext, deduplicated: false };
   } catch (err) {
     await rm(temp, { force: true }).catch(() => {});
@@ -301,11 +324,15 @@ export async function saveUpload(
   }
 }
 
-/** Vrai si le chemin existe (fichier ou dossier). */
-async function exists(path: string): Promise<boolean> {
+/** Vrai si un nom de fichier est un envoi INCOMPLET du cache (jamais servable). */
+export function isPartialUploadName(name: string): boolean {
+  return name.startsWith(UPLOAD_TEMP_PREFIX);
+}
+
+/** Vrai si le chemin est un FICHIER régulier (un dossier ne compte pas). */
+async function isFile(path: string): Promise<boolean> {
   try {
-    await stat(path);
-    return true;
+    return (await stat(path)).isFile();
   } catch {
     return false;
   }

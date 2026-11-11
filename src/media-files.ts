@@ -7,7 +7,7 @@
 // cache), puis vérifie que ce chemin est bien un fichier média situé DANS l'une
 // des racines autorisées. Toute autre situation est refusée par un message
 // français, sans jamais révéler de chemin.
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, relative, resolve } from 'node:path';
 
 /** Type MIME servi pour chaque extension média acceptée. */
@@ -40,7 +40,7 @@ export function mediaContentType(ext: string): string {
 }
 
 /** Vrai si `target` (résolu) est un fichier situé dans `dir` (déjà résolu). */
-function isInside(target: string, dir: string): boolean {
+export function isInsideDir(target: string, dir: string): boolean {
   const rel = relative(dir, target);
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
@@ -51,27 +51,41 @@ export type MediaResolution =
 
 /**
  * Vérifie qu'un chemin candidat est un média servable :
- *  - strictement à l'intérieur de l'une des racines autorisées (sinon 403) ;
  *  - d'extension média reconnue (sinon 403) ;
- *  - existant et régulier (sinon 404).
+ *  - réellement présent (sinon 404) ;
+ *  - dont le chemin RÉEL (`realpath`, liens et jonctions résolus) est
+ *    strictement à l'intérieur du chemin RÉEL de l'une des racines autorisées
+ *    (sinon 403) — une jonction placée dans une racine et sortant de celle-ci
+ *    est donc refusée, la comparaison n'étant pas seulement lexicale ;
+ *  - et qui est un fichier régulier (sinon 404).
+ * Le chemin renvoyé est le chemin réel, celui effectivement ouvert.
  */
 export async function resolveMediaFile(candidate: string, roots: string[]): Promise<MediaResolution> {
   const target = resolve(candidate);
-  const allowed = roots.some((root) => isInside(target, resolve(root)));
-  if (!allowed) return { ok: false, status: 403, message: MEDIA_FORBIDDEN_MESSAGE };
-
   const ext = extname(target).toLowerCase();
   if (!(ext in MEDIA_MIME_TYPES)) return { ok: false, status: 403, message: MEDIA_FORBIDDEN_MESSAGE };
 
+  let realTarget: string;
+  try {
+    realTarget = await realpath(target);
+  } catch {
+    return { ok: false, status: 404, message: MEDIA_NOT_FOUND_MESSAGE };
+  }
+
+  // Chemin réel de chaque racine : une racine inexistante ne peut rien contenir.
+  const realRoots = await Promise.all(roots.map((root) => realpath(resolve(root)).catch(() => null)));
+  const allowed = realRoots.some((root) => root !== null && isInsideDir(realTarget, root));
+  if (!allowed) return { ok: false, status: 403, message: MEDIA_FORBIDDEN_MESSAGE };
+
   let info;
   try {
-    info = await stat(target);
+    info = await stat(realTarget);
   } catch {
     return { ok: false, status: 404, message: MEDIA_NOT_FOUND_MESSAGE };
   }
   if (!info.isFile()) return { ok: false, status: 404, message: MEDIA_NOT_FOUND_MESSAGE };
 
-  return { ok: true, path: target, ext, size: info.size };
+  return { ok: true, path: realTarget, ext, size: info.size };
 }
 
 /** Résultat de l'analyse d'un en-tête `Range`. */

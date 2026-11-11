@@ -6,7 +6,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { z } from 'zod';
 import { createReadStream } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { extname, basename, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { and, asc, desc, eq, like, sql } from 'drizzle-orm';
 import { db, dbPath } from './db';
@@ -20,6 +20,7 @@ import {
   UploadError,
   clearUploadCache,
   findCacheFileByHash,
+  isPartialUploadName,
   saveUpload,
   sweepStaleUploads,
   sweepUploadCache,
@@ -29,6 +30,7 @@ import {
 } from './upload';
 import {
   MEDIA_NOT_FOUND_MESSAGE,
+  isInsideDir,
   mediaContentType,
   parseSingleRange,
   resolveMediaFile,
@@ -121,11 +123,11 @@ export function mediaDir(): string {
   return resolve(process.cwd(), '..', '..');
 }
 
-/** Vrai si `target` (déjà résolu) est un fichier situé dans `dir`. */
-export function isInsideDir(target: string, dir: string): boolean {
-  const rel = relative(dir, target);
-  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
-}
+/**
+ * Vrai si `target` (déjà résolu) est un fichier situé dans `dir`.
+ * Ré-exporté depuis `./media-files` pour ne garder qu'une seule définition.
+ */
+export { isInsideDir };
 
 async function isDirectory(path: string): Promise<boolean> {
   try {
@@ -474,6 +476,11 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       const { id } = idParam.parse(req.params);
       const candidate = await mediaCandidatePath(id);
       const resolved = candidate ? await resolveMediaFile(candidate, mediaRoots()) : null;
+      // Un envoi INCOMPLET (`ckr-part-*`) n'est jamais servi, même si une ligne
+      // en base pointait dessus : il est tronqué par définition.
+      if (resolved && resolved.ok && isPartialUploadName(basename(resolved.path))) {
+        return reply.code(404).send({ error: MEDIA_NOT_FOUND_MESSAGE });
+      }
       if (!resolved || !resolved.ok) {
         if (!resolved) return reply.code(404).send({ error: MEDIA_NOT_FOUND_MESSAGE });
         return reply.code(resolved.status).send({ error: resolved.message });

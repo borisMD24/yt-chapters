@@ -2,8 +2,8 @@
 // de tout identifiant qui ne résout pas à un fichier média autorisé.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -51,6 +51,27 @@ const cacheSha1 = createHash('sha1').update(cacheBytes).digest('hex');
 writeFileSync(join(cacheDir, `${cacheSha1}.mp3`), cacheBytes);
 const UPLOAD_ID = `local:up-${cacheSha1.slice(0, 12)}`;
 
+// Envoi INCOMPLET laissé dans le cache : ne doit jamais être servi, quel que
+// soit l'identifiant (le préfixe d'un temporaire n'est pas de l'hexadécimal).
+const partialName = `ckr-part-${randomUUID()}.mp3`;
+writeFileSync(join(cacheDir, partialName), Buffer.alloc(1000, 9));
+
+// Fichier dont le NOM commence par un préfixe de temporaire suivi d'une
+// empreinte : même avec l'empreinte exacte, il ne doit pas être atteint.
+const trapSha1 = createHash('sha1').update(Buffer.alloc(500, 5)).digest('hex');
+writeFileSync(join(cacheDir, `ckr-part-${trapSha1}.mp3`), Buffer.alloc(500, 5));
+
+// Lien (jonction) DANS MEDIA_DIR qui pointe HORS de MEDIA_DIR.
+const junctionPath = join(mediaDir, 'lien-absolu');
+const junctionSecret = join(outside, 'secret.mp3');
+writeFileSync(junctionSecret, Buffer.alloc(2000, 7));
+let junctionOk = true;
+try {
+  symlinkSync(outside, junctionPath, 'junction');
+} catch {
+  junctionOk = false;
+}
+
 let appPromise: Promise<FastifyInstance> | null = null;
 async function getApp(): Promise<FastifyInstance> {
   if (!appPromise) {
@@ -68,6 +89,8 @@ async function getApp(): Promise<FastifyInstance> {
     stmt.run('local:dehors', 'evil.mp3', outsideFile);
     stmt.run('local:txt', 'notes.txt', join(mediaDir, 'notes.txt'));
     stmt.run('local:dossier', 'dossier', join(mediaDir, 'dossier.mp3'));
+    if (junctionOk) stmt.run('local:liensecret', 'secret.mp3', join(junctionPath, 'secret.mp3'));
+    stmt.run('local:partial', 'partiel', join(cacheDir, partialName));
     raw.close();
     appPromise = Promise.resolve(app);
   }
@@ -140,6 +163,51 @@ test('GET /media/:id retrouve un envoi du cache par préfixe d’empreinte (plag
   const part = await app.inject({ method: 'GET', url: `/media/${UPLOAD_ID}`, headers: { range: 'bytes=0-99' } });
   assert.equal(part.statusCode, 206);
   assert.equal(part.rawPayload.length, 100);
+});
+
+test('un préfixe d’empreinte trop court (1 à 11 caractères) est refusé : pas d’énumération', async () => {
+  const app = await getApp();
+  for (const len of [1, 2, 3, 6, 11]) {
+    const res = await app.inject({ method: 'GET', url: `/media/local:up-${cacheSha1.slice(0, len)}` });
+    assert.equal(res.statusCode, 404, `préfixe de ${len} caractère(s) doit être refusé`);
+    assert.match((res.json() as { error: string }).error, /introuvable/i, 'message français attendu');
+  }
+  // Contrôle positif : le préfixe complet (12 hex) sert bien le fichier.
+  const ok = await app.inject({ method: 'GET', url: `/media/local:up-${cacheSha1.slice(0, 12)}` });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.rawPayload.length, cacheBytes.length);
+  // L'empreinte complète (40 hex) fonctionne aussi.
+  const full = await app.inject({ method: 'GET', url: `/media/local:up-${cacheSha1}` });
+  assert.equal(full.statusCode, 200);
+});
+
+test('un envoi INCOMPLET (ckr-part-*) n’est jamais servi', async () => {
+  const app = await getApp();
+  // Identifiant dérivé du nom du temporaire (c, k, r… ne sont pas hexadécimaux).
+  const byTempName = await app.inject({ method: 'GET', url: `/media/local:up-${partialName}` });
+  assert.equal(byTempName.statusCode, 404);
+  // Même en base, un temporaire reste inservable.
+  const byRow = await app.inject({ method: 'GET', url: '/media/local:partial' });
+  assert.notEqual(byRow.statusCode, 200, 'un fichier partiel ne doit jamais être servi');
+  // Un nom `ckr-part-<40 hex>.mp3` n’est pas atteint par l’empreinte seule.
+  const trap = await app.inject({ method: 'GET', url: `/media/local:up-${trapSha1}` });
+  assert.equal(trap.statusCode, 404);
+});
+
+test('une jonction placée dans MEDIA_DIR et sortant de la racine est refusée', async (t) => {
+  if (!junctionOk) {
+    t.skip('jonction non créable sur cette machine : containment lexical testé séparément');
+    return;
+  }
+  const app = await getApp();
+  const res = await app.inject({ method: 'GET', url: '/media/local:liensecret' });
+  assert.notEqual(res.statusCode, 200, 'un lien sortant de la racine ne doit pas être servi');
+  assert.equal(res.statusCode, 403);
+  assert.match((res.json() as { error: string }).error, /autorisés/i);
+  // Le fichier hors racine reste lisible… par son vrai chemin via une racine
+  // autorisée qui le contient : ici aucune, donc refus attendu (contrôle).
+  const direct = await app.inject({ method: 'GET', url: '/media/local:dehors' });
+  assert.equal(direct.statusCode, 403);
 });
 
 test('GET /media/:id refuse : hors racines (403), non-média (403), dossier (404), inconnu (404)', async () => {

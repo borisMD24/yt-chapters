@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -12,6 +12,7 @@ import {
   UPLOAD_TEMP_PREFIX,
   clearUploadCache,
   findCacheFileByHash,
+  sanitizeUploadName,
   saveUpload,
   sweepUploadCache,
   uploadCacheDir,
@@ -114,7 +115,38 @@ test('un identifiant d’envoi retrouve le fichier du cache par préfixe d’emp
 
   const found = await findCacheFileByHash(saved.sha1.slice(0, 12));
   assert.equal(found, saved.path);
+  assert.equal(await findCacheFileByHash(saved.sha1), saved.path, 'empreinte complète acceptée');
   assert.equal(await findCacheFileByHash('000000000000'), null);
+});
+
+test('findCacheFileByHash exige 12 à 40 caractères hexadécimaux (pas d’énumération)', async () => {
+  freshCache();
+  const payload = Buffer.from('prefixe strict');
+  const saved = await saveUpload(Readable.from([payload]), { filename: 'x.mp3', maxBytes: 1e6 });
+
+  // Trop court : un seul caractère suffisait à retrouver un envoi.
+  for (const len of [1, 2, 6, 11]) {
+    assert.equal(await findCacheFileByHash(saved.sha1.slice(0, len)), null, `préfixe de ${len} refusé`);
+  }
+  // Non hexadécimal, trop long, ou vide.
+  assert.equal(await findCacheFileByHash('zzzzzzzzzzzz'), null);
+  assert.equal(await findCacheFileByHash(saved.sha1 + 'a'), null);
+  assert.equal(await findCacheFileByHash(''), null);
+  // Bornes acceptées.
+  assert.equal(await findCacheFileByHash(saved.sha1.slice(0, 12)), saved.path);
+  assert.equal(await findCacheFileByHash(saved.sha1.slice(0, 40)), saved.path);
+});
+
+test('findCacheFileByHash ne renvoie jamais un fichier TEMPORAIRE (ckr-part-*)', async () => {
+  const dir = freshCache();
+  const payload = Buffer.from('temporaire interdit');
+  const sha = createHash('sha1').update(payload).digest('hex');
+  writeFileSync(join(dir, `${UPLOAD_TEMP_PREFIX}${sha}.mp3`), payload);
+
+  assert.equal(await findCacheFileByHash(sha), null, 'un temporaire n’est pas atteint par l’empreinte');
+  assert.equal(await findCacheFileByHash(`${UPLOAD_TEMP_PREFIX}${sha}`.slice(0, 12)), null);
+  // L'empreinte seule (12 hex) ne doit pas non plus attraper ce nom.
+  assert.equal(await findCacheFileByHash(`${UPLOAD_TEMP_PREFIX}${sha}`.slice(0, 12)), null);
 });
 
 test('dépassement du plafond : 413 et aucun résidu dans le cache', async () => {
@@ -142,6 +174,49 @@ test('extension non média : 415 sans rien écrire', async () => {
     (err: { status?: number }) => err.status === 415,
   );
   assert.deepEqual(readdirSync(dir), []);
+});
+
+test('deux envois identiques SIMULTANÉS aboutissent tous les deux (déduplication)', async () => {
+  const dir = freshCache();
+  const payload = Buffer.from('concurrence sur des octets identiques');
+  const [a, b] = await Promise.all([
+    saveUpload(Readable.from([payload]), { filename: 'x.mp3', maxBytes: 1e6 }),
+    saveUpload(Readable.from([payload]), { filename: 'x.mp3', maxBytes: 1e6 }),
+  ]);
+  assert.equal(a.path, b.path, 'même fichier de cache');
+  assert.equal(a.sha1, b.sha1);
+  assert.deepEqual(readdirSync(dir), [`${a.sha1}.mp3`], 'un seul fichier, aucun temporaire');
+  assert.equal(statSync(a.path).size, payload.length, 'contenu intact');
+});
+
+test('un DOSSIER occupant le nom du cache échoue proprement (jamais de faux « dédupliqué »)', async () => {
+  const dir = freshCache();
+  const payload = Buffer.from('nom de cache occupe par un dossier');
+  const sha = createHash('sha1').update(payload).digest('hex');
+  mkdirSync(join(dir, `${sha}.mp3`)); // dossier, pas un fichier
+
+  await assert.rejects(
+    () => saveUpload(Readable.from([payload]), { filename: 'x.mp3', maxBytes: 1e6 }),
+    (err: { status?: number }) => err.status === 400,
+    'un dossier occupant le nom ne doit pas être annoncé comme un envoi réussi',
+  );
+  assert.deepEqual(readdirSync(dir), [`${sha}.mp3`], 'aucun fichier temporaire laissé');
+});
+
+test('sanitizeUploadName : 255 caractères acceptés, 256 refusés', async () => {
+  const name255 = 'a'.repeat(251) + '.mp3'; // 255 caractères
+  const name256 = 'a'.repeat(252) + '.mp3'; // 256 caractères
+  assert.equal(sanitizeUploadName(name255), name255);
+  assert.equal(sanitizeUploadName(name256), null);
+
+  const dir = freshCache();
+  const payload = Buffer.from('nom long accepte');
+  const ok = await saveUpload(Readable.from([payload]), { filename: name255, maxBytes: 1e6 });
+  assert.equal(ok.path, join(dir, `${createHash('sha1').update(payload).digest('hex')}.mp3`));
+  await assert.rejects(
+    () => saveUpload(Readable.from([Buffer.from('refuse')]), { filename: name256, maxBytes: 1e6 }),
+    (err: { status?: number }) => err.status === 400,
+  );
 });
 
 test('rétention par défaut : 7 jours, surchargeable et jamais absurde', () => {

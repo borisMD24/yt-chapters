@@ -840,11 +840,12 @@
           return total > 0 ? Math.min(total, value) : value;
         }
 
-        function select(index) {
+        /** `skipList` : ne pas reconstruire la liste (saisie en cours dans un champ). */
+        function select(index, skipList) {
           if (index == null || !state.chapters[index]) return;
           state.selected = index;
           renderMarkers();
-          renderList();
+          if (!skipList) renderList();
           renderSelected();
         }
 
@@ -855,7 +856,7 @@
           renderSelected();
         }
 
-        function setStart(index, sec) {
+        function setStart(index, sec, skipList) {
           var c = state.chapters[index];
           if (!c) return;
           var next = clampSec(sec);
@@ -863,7 +864,7 @@
           c.startSec = next;
           renderMarkers();
           renderPlayhead();
-          renderList();
+          if (!skipList) renderList();
           renderSelected();
           renderExport();
           renderWarnings();
@@ -1065,8 +1066,14 @@
           if (index != null) deleteChapter(index);
         }
 
-        /** Saisie directe d'un horodatage ou d'un titre. */
-        function onListInput(ev) {
+        /**
+         * Saisie directe d'un horodatage ou d'un titre.
+         * `isChange` distingue la frappe (`input`) de la validation (`change`) :
+         * pendant la frappe on ne reconstruit PAS la liste, sinon le champ en
+         * cours d'édition perdrait le focus après la première touche ; à la
+         * validation on reconstruit, pour afficher la valeur canonique.
+         */
+        function onListInput(ev, isChange) {
           var target = ev && ev.target;
           var index = indexFromTarget(ev);
           if (target == null || index == null || !target.dataset) return;
@@ -1077,8 +1084,9 @@
               setStatus('Horodatage illisible : utilisez mm:ss (par exemple 12:30).', 'err');
               return;
             }
-            setStart(index, sec);
-            select(index);
+            setStart(index, sec, !isChange);
+            select(index, !isChange);
+            if (isChange) renderList();
           } else if (field === 'title') {
             state.chapters[index].title = target.value;
             renderAfterEdit();
@@ -1197,8 +1205,12 @@
         els.timeline.addEventListener('pointerup', onPointerUp);
         els.timeline.addEventListener('pointercancel', onPointerUp);
         els.list.addEventListener('click', onListClick);
-        els.list.addEventListener('input', onListInput);
-        els.list.addEventListener('change', onListInput);
+        els.list.addEventListener('input', function (ev) {
+          onListInput(ev, false);
+        });
+        els.list.addEventListener('change', function (ev) {
+          onListInput(ev, true);
+        });
 
         function onTimeUpdate() {
           renderPlayhead();
