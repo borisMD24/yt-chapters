@@ -72,6 +72,12 @@ export async function chunkToMp3(
   await stat(src); // échoue tôt si le fichier est absent
 
   const chunkSec = opts.chunkSec && opts.chunkSec > 0 ? opts.chunkSec : DEFAULT_CHUNK_SEC;
+  // Un chunk plus court que le plancher donnerait 0 chunk et un message trompeur
+  // en aval ("aucun chunk produit") : on refuse net, avant de créer le moindre
+  // fichier temporaire.
+  if (!Number.isFinite(chunkSec) || chunkSec < MIN_CHUNK_SEC) {
+    throw new Error(`durée de chunk invalide : ${chunkSec}s (minimum ${MIN_CHUNK_SEC}s)`);
+  }
   const dir = await mkdtemp(join(tmpdir(), 'ytc-chunks-'));
   const cleanup = () => rm(dir, { recursive: true, force: true });
 

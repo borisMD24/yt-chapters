@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeChunkOffsets, probeDurationSec, chunkToMp3 } from '../src/audio.ts';
+import { computeChunkOffsets, probeDurationSec, chunkToMp3, MIN_CHUNK_SEC } from '../src/audio.ts';
 
 const run = promisify(execFile);
 
@@ -94,6 +94,24 @@ test('INTEGRATION: chunkToMp3 écarte le chunk résiduel final (<1s) même sans 
     assert.equal(cut.chunks[2].startSec, cut.chunks[0].durationSec + cut.chunks[1].durationSec);
   } finally {
     await cut.cleanup();
+  }
+});
+
+test('chunkToMp3 refuse un chunkSec inférieur à MIN_CHUNK_SEC', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'ytc-audio-floor-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const src = join(dir, 'src.mp3');
+  await run('ffmpeg', ['-hide_banner', '-nostdin', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-ac', '1', src]);
+
+  // 0.5s < plancher : mieux vaut refuser net que produire 0 chunk.
+  await assert.rejects(() => chunkToMp3(src, { chunkSec: 0.5 }), /minimum 1s/);
+  await assert.rejects(() => chunkToMp3(src, { chunkSec: MIN_CHUNK_SEC / 2 }), /minimum 1s/);
+  // Le plancher exact reste accepté.
+  const ok = await chunkToMp3(src, { chunkSec: MIN_CHUNK_SEC });
+  try {
+    assert.ok(ok.chunks.length >= 1);
+  } finally {
+    await ok.cleanup();
   }
 });
 

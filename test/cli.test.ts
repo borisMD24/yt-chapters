@@ -5,7 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { jsonPayload, parseArgs, isEntryPoint } from '../src/cli.ts';
+import { jsonPayload, parseArgs, isEntryPoint, validateChunkSec } from '../src/cli.ts';
+import { MIN_CHUNK_SEC } from '../src/audio.ts';
 import type { LocalChaptersResult } from '../src/local-chapters.ts';
 
 const sample: LocalChaptersResult = {
@@ -49,4 +50,16 @@ test('isEntryPoint : vrai seulement pour le script lancé (module importable san
   assert.equal(isEntryPoint('src/cli.ts', url), true); // relatif résolu depuis le cwd
   assert.equal(isEntryPoint(undefined, url), false);
   assert.equal(isEntryPoint(resolve('src/other.ts'), url), false);
+});
+
+test('validateChunkSec : refuse un chunk plus court que MIN_CHUNK_SEC', () => {
+  // Sans ce garde-fou : 0 chunk produit et message trompeur "aucun chunk produit".
+  assert.equal(validateChunkSec(undefined), null);
+  assert.equal(validateChunkSec(300), null);
+  assert.equal(validateChunkSec(MIN_CHUNK_SEC), null);
+  assert.match(String(validateChunkSec(0.5)), /1/);
+  assert.match(String(validateChunkSec(0.5)), /--chunk/);
+  assert.match(String(validateChunkSec(0)), /--chunk/);
+  assert.match(String(validateChunkSec(Number.NaN)), /--chunk/);
+  assert.match(String(validateChunkSec(Number.POSITIVE_INFINITY)), /--chunk/);
 });

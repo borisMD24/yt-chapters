@@ -63,6 +63,29 @@ test('parseChaptersJson renvoie [] si aucun JSON exploitable', () => {
   assert.deepEqual(parseChaptersJson('{pas du json}'), []);
 });
 
+test('parseChaptersJson tolère les clés snake_case du provider (dérive live)', () => {
+  // Payload réellement observé en re-validation : bon enveloppe, clés d'items en
+  // snake_case → tous les items étaient rejetés (0 chapitre, aucune erreur).
+  const live =
+    '{"chapters":[{"start_sec":0,"title":"Introduction"},{"start_sec":312,"title":"  Suite  "},{"start":"600","titre":"Fin"},{"start_seconds":900,"title":"Bonus"}]}';
+  assert.deepEqual(parseChaptersJson(live), [
+    { startSec: 0, title: 'Introduction' },
+    { startSec: 312, title: 'Suite' },
+    { startSec: 600, title: 'Fin' },
+    { startSec: 900, title: 'Bonus' },
+  ]);
+});
+
+test('parseChaptersJson accepte un tableau mixte et filtre ce qui reste invalide', () => {
+  const mixed =
+    '{"chapters":[{"startSec":0,"title":"A"},{"start_sec":120,"title":"B"},{"start_seconds":240,"titre":"C"},{"title":"sans start"},{"start":300},{"startSec":420,"title":"   "}]}';
+  assert.deepEqual(parseChaptersJson(mixed), [
+    { startSec: 0, title: 'A' },
+    { startSec: 120, title: 'B' },
+    { startSec: 240, title: 'C' },
+  ]);
+});
+
 test('buildWarnings reproduit les règles du /export existant', () => {
   const chs = [
     { startSec: 0, title: 'Intro', validated: true },
@@ -114,17 +137,32 @@ test('extractJsonObject isole le premier objet équilibré (accolades dans les c
   assert.equal(extractJsonObject('{"a":1}'), '{"a":1}');
 });
 
-test('shouldFallbackToJsonObject : repli uniquement sur 400/404/422', () => {
-  assert.equal(shouldFallbackToJsonObject({ status: 400 }), true);
+test('shouldFallbackToJsonObject : 400 seulement si response_format/json_schema est en cause', () => {
+  assert.equal(shouldFallbackToJsonObject({ status: 400, message: 'Unsupported response_format: json_schema' }), true);
+  assert.equal(shouldFallbackToJsonObject({ status: 400, message: 'this model does not support json_schema' }), true);
+  // 400 sans rapport (contexte dépassé, modèle inconnu) : ne pas payer un 2e appel.
+  assert.equal(shouldFallbackToJsonObject({ status: 400, message: 'context length exceeded' }), false);
+  assert.equal(shouldFallbackToJsonObject({ status: 400, message: 'model not found' }), false);
   assert.equal(shouldFallbackToJsonObject({ status: 404 }), true);
   assert.equal(shouldFallbackToJsonObject({ status: 422 }), true);
-  // Auth / quota / serveur / réseau : jamais de second appel (double facturation).
-  assert.equal(shouldFallbackToJsonObject({ status: 401 }), false);
+  // Auth / quota / serveur / réseau : jamais de second appel facturé.
+  assert.equal(shouldFallbackToJsonObject({ status: 401, message: 'response_format' }), false);
   assert.equal(shouldFallbackToJsonObject({ status: 403 }), false);
   assert.equal(shouldFallbackToJsonObject({ status: 429 }), false);
   assert.equal(shouldFallbackToJsonObject({ status: 500 }), false);
   assert.equal(shouldFallbackToJsonObject(new TypeError('fetch failed')), false);
   assert.equal(shouldFallbackToJsonObject(undefined), false);
+});
+
+test('proposeChapters : 400 hors response_format relayée telle quelle, sans second appel', async () => {
+  const ctxErr = Object.assign(new Error('400 context length exceeded'), { status: 400 });
+  const formats: string[] = [];
+  const complete: ChaptersCompleter = async (req) => {
+    formats.push(req.response_format.type);
+    throw ctxErr;
+  };
+  await assert.rejects(() => proposeChapters({ title: 'T', durationSec: 600 }, [], { complete }), (err) => err === ctxErr);
+  assert.deepEqual(formats, ['json_schema']);
 });
 
 test('proposeChapters : résultat JSON valide mais vide accepté (pas d’erreur)', async () => {
@@ -170,9 +208,35 @@ test('proposeChapters : repli json_object si le provider refuse json_schema (400
   assert.deepEqual(formats, ['json_schema', 'json_object']);
 });
 
+test('proposeChapters : payload live snake_case → chapitres (plus de liste vide silencieuse)', async () => {
+  // Reproduit la défaillance de re-validation : bonne enveloppe, clés d'items en
+  // snake_case, provider Alibaba → renvoyait 0 chapitre sans erreur ni retry.
+  const live =
+    '{"chapters":[{"start_sec":0,"title":"Introduction"},{"start_sec":312,"title":"Deuxième partie"},{"start_sec":600,"title":"Conclusion"}]}';
+  const { complete, formats } = recorder([msg(live)]);
+  const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
+  assert.deepEqual(
+    out.map((c) => c.title),
+    ['Introduction', 'Deuxième partie', 'Conclusion'],
+  );
+  assert.deepEqual(formats, ['json_schema']); // exploitable du premier coup
+});
+
+test('proposeChapters : tableau non vide mais 0 item valide = inexploitable (repli puis erreur)', async () => {
+  const { complete, formats } = recorder([
+    msg('{"chapters":[{"debut":0,"nom":"X"},{"debut":120,"nom":"Y"}]}'),
+    msg('{"chapters":[{"foo":1}]}'),
+  ]);
+  await assert.rejects(
+    () => proposeChapters({ title: 'T', durationSec: 600 }, [], { complete }),
+    UnusableChapterOutputError,
+  );
+  assert.deepEqual(formats, ['json_schema', 'json_object']);
+});
+
 test('proposeChapters : 200 avec content "[0]" → repli json_object puis chapitres', async () => {
   const { complete, formats } = recorder([
-    msg('[0]', '{"chapters":[{"startSec":0,"title":"Depuis reasoning"}]}'),
+    msg('[0]'), // aucun reasoning : rien d'exploitable dans le premier appel
     // Le content du second appel doit primer sur son reasoning (piège volontaire).
     msg('{"chapters":[{"startSec":0,"title":"Intro"},{"startSec":300,"title":"Suite"}]}', '{"chapters":[{"startSec":0,"title":"PIEGE"}]}'),
   ]);
@@ -184,9 +248,19 @@ test('proposeChapters : 200 avec content "[0]" → repli json_object puis chapit
   assert.deepEqual(formats, ['json_schema', 'json_object']);
 });
 
+test('proposeChapters : reasoning du PREMIER appel exploité sans second appel payé', async () => {
+  const { complete, formats } = recorder([
+    // Forme documentée par la probe live : content "[0]" + JSON réel dans reasoning.
+    msg('[0]', '{"chapters":[{"start_sec":0,"title":"Depuis reasoning"}]}'),
+  ]);
+  const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
+  assert.deepEqual(out, [{ startSec: 0, title: 'Depuis reasoning' }]);
+  assert.deepEqual(formats, ['json_schema']); // un seul appel
+});
+
 test('proposeChapters : dernier recours = JSON trouvé dans reasoning', async () => {
   const { complete, formats } = recorder([
-    msg('[0]', '{"chapters":[{"startSec":0,"title":"Reasoning 1"}]}'),
+    msg('[0]'), // premier appel sans reasoning exploitable
     msg('[0]', '{"chapters":[{"startSec":0,"title":"Depuis le reasoning"}]}'),
   ]);
   const out = await proposeChapters({ title: 'T', durationSec: 900 }, [], { complete });
@@ -224,6 +298,18 @@ test('proposeChapters : OPENROUTER_API_KEY manquante → erreur explicite (pas d
     if (prevOpenai === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = prevOpenai;
   }
+});
+
+test('proposeChapters : le prompt impose les clés exactes startSec et title', async () => {
+  let system = '';
+  const complete: ChaptersCompleter = async (req) => {
+    system = String(req.messages[0]?.content ?? '');
+    return msg('{"chapters":[]}');
+  };
+  await proposeChapters({ title: 'T', durationSec: 600 }, [], { complete });
+  assert.match(system, /"startSec"/);
+  assert.match(system, /"title"/);
+  assert.match(system, /snake_case/);
 });
 
 test('proposeChapters : le prompt système impose la densité (3 à 8 min, jamais <60s)', async () => {

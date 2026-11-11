@@ -3,6 +3,7 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateLocalChapters, type LocalChaptersResult } from './local-chapters';
+import { MIN_CHUNK_SEC } from './audio';
 
 type Args = {
   file?: string;
@@ -28,6 +29,19 @@ export function parseArgs(argv: string[]): Args {
 }
 
 /**
+ * Valide la valeur de `--chunk`. Un chunk plus court que `MIN_CHUNK_SEC` produirait
+ * 0 chunk et le message trompeur "aucun chunk produit" plus loin dans le pipeline.
+ * Renvoie le message d'erreur, ou `null` si la valeur est acceptable.
+ */
+export function validateChunkSec(chunkSec: number | undefined): string | null {
+  if (chunkSec === undefined) return null;
+  if (!Number.isFinite(chunkSec) || chunkSec < MIN_CHUNK_SEC) {
+    return `--chunk doit être un nombre ≥ ${MIN_CHUNK_SEC} s (reçu : ${chunkSec})`;
+  }
+  return null;
+}
+
+/**
  * Payload de `--json`. Inclut `segments` (transcript en mémoire) : il n'est pas
  * persisté, mais il permet de vérifier indépendamment les offsets/durées.
  */
@@ -45,6 +59,12 @@ export function jsonPayload(res: LocalChaptersResult): Record<string, unknown> {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  const chunkError = validateChunkSec(args.chunkSec);
+  if (chunkError) {
+    console.error(chunkError);
+    console.error(USAGE);
+    process.exit(1);
+  }
   if (!args.file) {
     console.error(USAGE);
     process.exit(1);

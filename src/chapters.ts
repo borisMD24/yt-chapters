@@ -70,11 +70,45 @@ export const CHAPTERS_SCHEMA = {
   },
 } as const;
 
-const ProposedSchema = z.object({
-  startSec: z.coerce.number().finite(),
-  title: z.string().min(1),
-});
+/** Alias de clés tolérés : les providers routés dérivent (snake_case, abréviations). */
+const START_KEYS = ['startSec', 'start_sec', 'start', 'start_seconds'] as const;
+const TITLE_KEYS = ['title', 'titre'] as const;
+
+/** Nombre exploitable depuis un champ numérique/coercible, sinon null. */
+function toFiniteNumber(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v.trim());
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** Première clé alias renseignée (null/undefined = absente). */
+function pickAlias(item: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const k of keys) {
+    const v = item[k];
+    if (v !== undefined && v !== null) return v;
+  }
+  return undefined;
+}
+
+/** Enveloppe attendue : `{"chapters":[…]}`. */
 const ChaptersSchema = z.object({ chapters: z.array(z.unknown()) });
+
+/**
+ * Convertit un item brut du modèle en chapitre en tolérant les alias de clés
+ * (`start_sec`, `start`, `start_seconds`, `titre`). `null` si inexploitable.
+ */
+function toProposed(item: unknown): Proposed | null {
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
+  const rec = item as Record<string, unknown>;
+  const startSec = toFiniteNumber(pickAlias(rec, START_KEYS));
+  const rawTitle = pickAlias(rec, TITLE_KEYS);
+  if (startSec === null || typeof rawTitle !== 'string') return null;
+  const title = rawTitle.trim();
+  return title ? { startSec, title } : null;
+}
 
 /** Erreur métier : la réponse du modèle ne contient aucun JSON de chapitres exploitable. */
 export class UnusableChapterOutputError extends Error {
@@ -115,6 +149,8 @@ export function extractJsonObject(raw: string): string | null {
  * Renvoie `null` si aucun objet JSON de chapitres n'est exploitable (réponse
  * hors-sujet, JSON tronqué, `[0]`…) — à distinguer d'un résultat valide vide
  * `{"chapters":[]}` qui, lui, est un vrai résultat.
+ * Un tableau NON VIDE dont aucun item n'est exploitable (dérive de clés côté
+ * provider) est lui aussi une réponse inexploitable, pas un résultat vide.
  */
 function analyzeChaptersJson(raw: string): Proposed[] | null {
   const block = extractJsonObject(raw);
@@ -127,12 +163,13 @@ function analyzeChaptersJson(raw: string): Proposed[] | null {
   }
   const shape = ChaptersSchema.safeParse(parsed);
   if (!shape.success) return null;
+  const items = shape.data.chapters;
   const out: Proposed[] = [];
-  for (const item of shape.data.chapters) {
-    const one = ProposedSchema.safeParse(item);
-    if (!one.success) continue;
-    out.push({ startSec: one.data.startSec, title: one.data.title.trim() });
+  for (const item of items) {
+    const one = toProposed(item);
+    if (one) out.push(one);
   }
+  if (items.length > 0 && out.length === 0) return null;
   return out;
 }
 
@@ -209,15 +246,32 @@ const SCHEMA_HINT: OpenAI.Chat.ChatCompletionMessageParam = {
   content: `Réponds avec un unique objet JSON conforme à ce schéma : ${JSON.stringify(CHAPTERS_SCHEMA)}`,
 };
 
+/** Texte exploitable d'une erreur (message + corps), pour qualifier un 400. */
+function errorText(err: unknown): string {
+  if (!err || typeof err !== 'object') return '';
+  const e = err as { message?: unknown; error?: unknown };
+  const parts = [typeof e.message === 'string' ? e.message : ''];
+  try {
+    if (e.error !== undefined) parts.push(JSON.stringify(e.error));
+  } catch {
+    /* corps non sérialisable : on se contente du message */
+  }
+  return parts.join(' ');
+}
+
 /**
  * Vrai seulement si l'erreur signifie que le provider ne supporte pas le
- * `response_format` demandé (400/404/422). Les erreurs d'auth, de quota, de
- * serveur ou de réseau ne justifient PAS un second appel facturé : elles doivent
- * remonter telles quelles.
+ * `response_format` demandé. 404/422 sont sans ambiguïté ; un 400 n'est retenu
+ * que s'il mentionne `response_format`/`json_schema` (sinon : contexte dépassé,
+ * modèle inconnu… et un second appel identique serait facturé pour rien).
+ * Les erreurs d'auth, de quota, de serveur ou de réseau ne justifient jamais de
+ * second appel : elles doivent remonter telles quelles.
  */
 export function shouldFallbackToJsonObject(err: unknown): boolean {
   const status = (err as { status?: unknown } | null | undefined)?.status;
-  return status === 400 || status === 404 || status === 422;
+  if (status === 404 || status === 422) return true;
+  if (status !== 400) return false;
+  return /response_format|json_schema/i.test(errorText(err));
 }
 
 /** Appel réel au provider via le SDK (seule partie non testable hors ligne). */
@@ -241,6 +295,7 @@ export async function proposeChapters(
     '- Un chapitre = un vrai changement de sujet ; startSec doit correspondre au début de ce sujet dans le transcript.',
     '- Minimum 3 chapitres si la vidéo dépasse 1 minute.',
     '- Titres courts (60 caractères max), informatifs, dans la langue du transcript, sans numérotation ni emoji.',
+    '- Format strict : {"chapters":[{"startSec": <entier en secondes>, "title": "<titre>"}]} — les clés sont exactement "startSec" et "title" (jamais snake_case ni un autre nom).',
     '- Réponds uniquement avec le JSON demandé.',
   ].join('\n');
 
@@ -256,10 +311,13 @@ export async function proposeChapters(
   let schemaError = '';
   try {
     const first = await complete({ ...base, messages, response_format: JSON_SCHEMA_FORMAT });
-    const chapters = analyzeChaptersJson(first.choices?.[0]?.message?.content ?? '');
-    if (chapters) return normalize(chapters, meta.durationSec);
-    // 200 mais `content` inexploitable (payload réel dans `reasoning`, cf.
-    // qwen3.5-27b routé AtlasCloud qui renvoie `"[0]"`) : on tente json_object.
+    const firstMessage = first.choices?.[0]?.message;
+    const fromContent = analyzeChaptersJson(firstMessage?.content ?? '');
+    if (fromContent) return normalize(fromContent, meta.durationSec);
+    // Forme documentée par la probe live : `content:"[0]"` avec le JSON réel dans
+    // le `reasoning` du MÊME appel → exploité ici, sans payer un second appel.
+    const fromFirstReasoning = analyzeChaptersJson(firstMessage?.reasoning ?? '');
+    if (fromFirstReasoning) return normalize(fromFirstReasoning, meta.durationSec);
   } catch (err) {
     if (!shouldFallbackToJsonObject(err)) throw err;
     schemaError = err instanceof Error ? err.message : String(err);
