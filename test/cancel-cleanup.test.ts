@@ -191,7 +191,9 @@ test('le balayage supprime un dossier ancien et épargne un dossier récent', as
   writeFileSync(join(stale, 'vieux.mp3'), 'x');
   writeFileSync(join(fresh, 'neuf.mp3'), 'x');
   const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  // L'ancienneté se juge sur l'activité la plus récente (dossier ET fichiers).
   utimesSync(stale, old, old);
+  utimesSync(join(stale, 'vieux.mp3'), old, old);
 
   try {
     const removed = await sweepStaleUploads(60 * 60 * 1000);
@@ -208,6 +210,7 @@ test('createApp déclenche le balayage de démarrage', async () => {
   writeFileSync(join(stale, 'oublie.mp3'), 'x');
   const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
   utimesSync(stale, old, old);
+  utimesSync(join(stale, 'oublie.mp3'), old, old);
 
   const app = (await import('../src/app.ts')).createApp({ pipeline: async () => done, logger: false });
   try {

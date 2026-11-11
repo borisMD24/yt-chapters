@@ -63,10 +63,37 @@ export function isAllowedMediaName(name: string): boolean {
 }
 
 /**
+ * Age d'un dossier d'envoi : on prend la date de modification la PLUS RÉCENTE
+ * entre le dossier et tous ses fichiers (écrire dans un fichier existant ne
+ * change pas la date du dossier : s'y fier seul ferait supprimer un envoi en
+ * cours par un second serveur démarré plus tard).
+ */
+async function newestMtimeMs(dir: string): Promise<number> {
+  let newest: number;
+  try {
+    newest = (await stat(dir)).mtimeMs;
+  } catch {
+    return 0;
+  }
+  try {
+    for (const entry of await readdir(dir)) {
+      try {
+        newest = Math.max(newest, (await stat(join(dir, entry))).mtimeMs);
+      } catch {
+        /* entrée disparue pendant le parcours : on l'ignore */
+      }
+    }
+  } catch {
+    /* dossier illisible : on se contente de sa propre date */
+  }
+  return newest;
+}
+
+/**
  * Nettoie les dossiers d'envoi abandonnés par un arrêt brutal du serveur.
- * Ne touche qu'aux dossiers `ckr-upload-*` dont la date de modification est
- * plus vieille que `maxAgeMs` (1 h par défaut) : un serveur concurrent, ou un
- * envoi en cours, a forcément un dossier récent et n'est donc jamais perturbé.
+ * Ne touche qu'aux dossiers `ckr-upload-*` dont l'activité la plus récente
+ * (dossier ou fichier) est plus vieille que `maxAgeMs` (1 h par défaut) : un
+ * serveur concurrent, ou un envoi en cours, est donc toujours épargné.
  * Renvoie le nombre de dossiers supprimés.
  */
 export async function sweepStaleUploads(maxAgeMs = 60 * 60 * 1000): Promise<number> {
@@ -83,8 +110,7 @@ export async function sweepStaleUploads(maxAgeMs = 60 * 60 * 1000): Promise<numb
     if (!entry.isDirectory() || !entry.name.startsWith(UPLOAD_DIR_PREFIX)) continue;
     const full = join(dir, entry.name);
     try {
-      const info = await stat(full);
-      if (now - info.mtimeMs < maxAgeMs) continue; // encore actif : on n'y touche pas
+      if (now - (await newestMtimeMs(full)) < maxAgeMs) continue; // encore actif
       await rm(full, { recursive: true, force: true });
       removed++;
     } catch {

@@ -23,6 +23,7 @@ Génère des chapitres YouTube à partir :
 | `PORT` | `3000` | port HTTP |
 | `MEDIA_DIR` | deux niveaux au-dessus du projet | dossier scanné par l'interface (fichiers audio/vidéo) |
 | `UPLOAD_MAX_MB` | `2048` | plafond d'un fichier envoyé depuis la page (Mo) |
+| `CHAPTER_MIN_GAP_SEC` | `180` | espacement minimal entre chapitres locaux (secondes) |
 
 ## Utiliser l'interface (sans ligne de commande)
 
@@ -75,6 +76,15 @@ La page fonctionne hors-ligne : aucun CDN, aucune police externe, aucun build.
 - Résultat copiable, téléchargeable en `.txt`, avec les avertissements YouTube
   en clair (ex. « Il faudrait au moins 3 chapitres »).
 - « Derniers chapitrages » reprend les générations locales récentes.
+
+**Densité des chapitres.** Sur un média local, le modèle a tendance à découper
+trop finement. La page applique donc un **espacement minimal entre chapitres
+locaux** (`CHAPTER_MIN_GAP_SEC`, 180 s par défaut) : un chapitre qui commence
+moins de trois minutes après le précédent est écarté. Rien n'est inventé,
+fusionné ni renuméroté — les horodatages et les titres proposés sont conservés
+tels quels — et il est normal d'obtenir moins de chapitres qu'annoncé (un
+avertissement s'affiche alors sous la liste). Le chapitrage des vidéos YouTube
+n'est pas concerné.
 
 
 

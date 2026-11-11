@@ -7,7 +7,7 @@ import { basename, resolve } from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { chunkToMp3 } from './audio';
 import { transcribeFile, stitchSegments, type ChunkTranscript } from './transcribe';
-import { buildWarnings, chaptersToText, normalize, proposeChapters, type Proposed } from './chapters';
+import { buildWarnings, chaptersToText, normalize, proposeChapters, type Proposed, MIN_GAP } from './chapters';
 import type { Segment } from './youtube';
 import { db } from './db';
 import { chapters as chaptersTable, videos } from './db/schema';
@@ -16,6 +16,12 @@ export type LocalChaptersOptions = {
   chunkSec?: number;
   lang?: string;
   maxChunks?: number;
+  /**
+   * Espacement minimal (secondes) entre deux chapitres consécutifs, propre au
+   * pipeline local (défaut : `CHAPTER_MIN_GAP_SEC`, sinon 180 s). Les chapitres
+   * trop rapprochés sont écartés, sans être ni déplacés ni fusionnés.
+   */
+  minGapSec?: number;
   /**
    * Identifiant de vidéo à utiliser au lieu de l'id dérivé du chemin (envoi de
    * fichier : `local:up-<sha1 du contenu>`), afin que deux envois du même
@@ -48,6 +54,41 @@ export type LocalChaptersResult = {
 export function localVideoId(path: string): string {
   const hash = createHash('sha1').update(resolve(path)).digest('hex').slice(0, 16);
   return `local:${hash}`;
+}
+
+/** Écart minimal par défaut entre deux chapitres d'un média local (3 minutes). */
+export const DEFAULT_CHAPTER_MIN_GAP_SEC = 180;
+
+/**
+ * Résout l'écart minimal d'un chapitrage local, défensivement :
+ * `CHAPTER_MIN_GAP_SEC` (180 s par défaut), jamais une valeur non finie ou
+ * négative, et jamais moins que le minimum YouTube (10 s).
+ */
+export function resolveChapterMinGapSec(value?: number): number {
+  const fromEnv = process.env.CHAPTER_MIN_GAP_SEC;
+  const candidate = value ?? (fromEnv === undefined || fromEnv.trim() === '' ? NaN : Number(fromEnv));
+  const parsed = Number(candidate);
+  const gap = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CHAPTER_MIN_GAP_SEC;
+  return Math.max(MIN_GAP, Math.round(gap));
+}
+
+/**
+ * Filtre glouton d'espacement : on garde le premier chapitre, puis chaque
+ * chapitre seulement s'il commence au moins `minGapSec` après le dernier
+ * conservé. Aucune invention, fusion ni renumérotation : les horodatages et
+ * les titres du modèle sont conservés tels quels.
+ *
+ * Propre au pipeline local : le chemin YouTube partagé (`normalize`) n'est pas
+ * concerné, car le modèle ignore la consigne de densité du prompt (12 chapitres
+ * pour 10 minutes observés) et une description YouTube est limitée en taille.
+ */
+export function applyChapterSpacing(chapters: Proposed[], minGapSec: number): Proposed[] {
+  const kept: Proposed[] = [];
+  for (const chapter of chapters) {
+    const last = kept[kept.length - 1];
+    if (!last || chapter.startSec - last.startSec >= minGapSec) kept.push(chapter);
+  }
+  return kept;
 }
 
 /** Erreur posée quand un job est annulé en cours de route. */
@@ -92,7 +133,10 @@ export async function generateLocalChapters(
 
     const segments = stitchSegments(transcripts);
     const title = basename(abs);
-    const chapters = await proposeChapters({ title, durationSec }, segments);
+    // Densité contrôlée ici (et seulement ici) : le modèle ne respecte pas la
+    // consigne « un chapitre toutes les 3 à 8 minutes ».
+    const proposed = await proposeChapters({ title, durationSec }, segments);
+    const chapters = applyChapterSpacing(proposed, resolveChapterMinGapSec(opts.minGapSec));
 
     return {
       videoId,

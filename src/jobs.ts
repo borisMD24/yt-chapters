@@ -64,6 +64,8 @@ export type JobRegistry = {
   createJob(input: JobInput): Job;
   getJob(id: string): Job | undefined;
   cancelJob(id: string): Job | undefined;
+  /** Diagnostic : nombre d'entrées de nettoyage encore référencées en mémoire. */
+  retainedCleanupCount(): number;
 };
 
 export type JobRegistryOptions = {
@@ -164,17 +166,23 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
       if (inFlight) return inFlight;
       if (attempts >= 2) return Promise.resolve(false);
       attempts++;
-      inFlight = (async () => {
+      // La remise à zéro de `inFlight` est attachée APRÈS l'affectation : si
+      // `fn` jette SYNCHRONEMENT, la tentative se termine pendant son exécution
+      // synchrone et l'ancienne version remettait `inFlight` à zéro trop tôt
+      // (la garde restait alors figée sur une promesse `false`, et plus aucun
+      // nettoyage n'était jamais relancé).
+      const attempt = (async () => {
         try {
           await fn();
           succeeded = true;
           return true;
         } catch {
           return false;
-        } finally {
-          inFlight = null;
         }
       })();
+      inFlight = attempt.finally(() => {
+        inFlight = null;
+      });
       return inFlight;
     };
   }
@@ -197,7 +205,12 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
     while (finishedOrder.length > maxFinished) {
       const oldest = finishedOrder.shift()!;
       const candidate = jobs.get(oldest);
-      if (candidate && isFinished(candidate.status)) jobs.delete(oldest);
+      if (candidate && isFinished(candidate.status)) {
+        jobs.delete(oldest);
+        // Le nettoyage est déjà terminé (on ne publie l'état terminal qu'après) :
+        // on peut oublier son entrée au lieu de la garder pour toujours.
+        cleanups.delete(oldest);
+      }
     }
   }
 
@@ -317,5 +330,10 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
     return job;
   }
 
-  return { createJob, getJob, cancelJob };
+  return {
+    createJob,
+    getJob,
+    cancelJob,
+    retainedCleanupCount: () => cleanups.size,
+  };
 }
