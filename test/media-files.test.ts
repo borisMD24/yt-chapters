@@ -2,15 +2,28 @@
 // chemin (jamais fourni par le client) et analyse d'un en-tête `Range` unique.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   MEDIA_NOT_FOUND_MESSAGE,
   resolveMediaFile,
   mediaContentType,
   parseSingleRange,
 } from '../src/media-files.ts';
+
+/**
+ * Vrai si une jonction a pu être créée (Windows : aucun droit particulier ;
+ * POSIX : `symlinkSync` est utilisé à la place d'une jonction).
+ */
+function linkDir(target: string, linkPath: string): boolean {
+  try {
+    symlinkSync(target, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test('mediaContentType couvre les formats audio et vidéo acceptés', () => {
   assert.equal(mediaContentType('.mp3'), 'audio/mpeg');
@@ -103,3 +116,64 @@ test('resolveMediaFile : une racine égale au fichier n’est pas « dedans »',
   const res = await resolveMediaFile(root, [root]);
   assert.equal(res.ok, false);
 });
+
+test('resolveMediaFile : une jonction INTERNE à la racine est résolue et servie (pas de sur-blocage)', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'ckr-mf-lien-'));
+  const reel = join(root, 'reel');
+  mkdirSync(reel);
+  const file = join(reel, 'clip.mp3');
+  writeFileSync(file, Buffer.alloc(2048, 3));
+  const cache = join(root, 'cache');
+  mkdirSync(cache);
+
+  if (!linkDir(reel, join(root, 'lien-interne'))) {
+    // Jonction impossible ici : on le dit explicitement plutôt que de laisser
+    // l'invariant sans couverture.
+    t.diagnostic('jonction non créable dans cet environnement : cas « lien interne » non couvert');
+    return;
+  }
+
+  // Via la jonction : même fichier, autorisé (la cible est DANS la racine).
+  const viaLien = await resolveMediaFile(join(root, 'lien-interne', 'clip.mp3'), [root]);
+  assert.equal(viaLien.ok, true, 'une jonction interne ne doit pas être bloquée');
+  if (viaLien.ok) {
+    assert.equal(viaLien.size, 2048);
+    assert.equal(viaLien.path, join(await realOrSelf(reel), 'clip.mp3'), 'chemin réel renvoyé');
+  }
+
+  // Fichier simple et fichier en sous-dossier : servis.
+  assert.equal((await resolveMediaFile(file, [root])).ok, true);
+  assert.equal((await resolveMediaFile(file, [cache, root])).ok, true, 'plusieurs racines autorisées');
+
+  // Jonction interne utilisée comme RACINE : la cible reste dedans, donc servie.
+  const asRoot = await resolveMediaFile(join(root, 'lien-interne', 'clip.mp3'), [join(root, 'lien-interne')]);
+  assert.equal(asRoot.ok, true, 'une racine pointant dans la racine autorisée reste autorisée');
+});
+
+test('resolveMediaFile : une jonction pointant HORS de la racine est refusée', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'ckr-mf-lien-'));
+  const outside = mkdtempSync(join(tmpdir(), 'ckr-mf-lien-hors-'));
+  writeFileSync(join(outside, 'secret.mp3'), Buffer.alloc(2000, 7));
+
+  if (!linkDir(outside, join(root, 'lien-sortant'))) {
+    t.diagnostic('jonction non créable dans cet environnement : cas « lien sortant » non couvert');
+    return;
+  }
+
+  const res = await resolveMediaFile(join(root, 'lien-sortant', 'secret.mp3'), [root]);
+  assert.equal(res.ok, false, 'une jonction sortante ne doit jamais être servie');
+  if (!res.ok) {
+    assert.equal(res.status, 403);
+    assert.match(res.message, /autoris/i);
+  }
+});
+
+/** Chemin réel d'un dossier (les jonctions ne doivent pas fausser l'attendu). */
+async function realOrSelf(dir: string): Promise<string> {
+  const { realpath } = await import('node:fs/promises');
+  try {
+    return await realpath(dir);
+  } catch {
+    return resolve(dir);
+  }
+}
