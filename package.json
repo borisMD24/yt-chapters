@@ -8,7 +8,7 @@
     "db:push": "drizzle-kit push",
     "chapters": "tsx --env-file=.env src/cli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test \"test/*.test.ts\""
+    "test": "node --import tsx --import ./test/setup.mts --test \"test/*.test.ts\""
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

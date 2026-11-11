@@ -125,6 +125,23 @@ test('401 « User not found » sur la sonde (compte 200) → verdict « inferenc
   assertNoLeak(result);
 });
 
+test('compte 401 (corps quelconque) → message neutre, sans affirmer « User not found »', async () => {
+  for (const body of [USER_NOT_FOUND_401, '{"error":{"message":"No auth credentials found"}', '']) {
+    const { fetch, calls } = stubFetch({ account: () => new Response(body, { status: 401 }) });
+    const result = await testOpenRouterKey(KEY_A, { fetchImpl: fetch });
+    assert.equal(result.ok, false, body);
+    assert.equal(result.verdict, 'inference-refused', body);
+    // Causes plausibles + lien, sans citer un corps qui n'a jamais été lu.
+    assert.match(result.message, /clé invalide/i);
+    assert.match(result.message, /expir/i);
+    assert.match(result.message, /révoqu/i);
+    assert.match(result.message, /openrouter\.ai\/settings\/keys/);
+    assert.ok(!/user not found/i.test(result.message), 'ne pas affirmer un corps non lu');
+    assert.equal(calls.length, 1, 'aucune sonde quand le compte refuse déjà la clé');
+    assertNoLeak(result);
+  }
+});
+
 test('la sonde est minimale : modèle de chapitrage, max_tokens 1, jamais d’audio', async () => {
   const { fetch, calls } = stubFetch({ account: account200({ usage: 1, limit: 5 }), probe: probe200 });
   const result = await testOpenRouterKey(KEY_A, { fetchImpl: fetch, model: 'modele-de-test' });

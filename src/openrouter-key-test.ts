@@ -101,6 +101,12 @@ const MESSAGE_PROVISIONING =
   "Cette clé sert à administrer des clés, elle ne peut pas transcrire. Créez une clé d'API normale sur openrouter.ai/settings/keys, puis enregistrez-la ici.";
 const MESSAGE_INFERENCE_REFUSED =
   "OpenRouter refuse cette clé pour transcrire (réponse 401 « User not found »). Trois causes possibles : c'est une clé d'administration (elle sert à administrer des clés, pas à transcrire), elle a expiré, ou elle a été révoquée. Vérifiez-la sur openrouter.ai/settings/keys, puis enregistrez une clé d'API normale.";
+// Refus à l'étape « état du compte » : le corps de la réponse n'est PAS lu ici,
+// et le 401 peut venir d'autres corps que « User not found » (ex. « No auth
+// credentials found ») : le message reste donc neutre sur la cause exacte tout
+// en citant les pistes plausibles.
+const MESSAGE_KEY_REFUSED =
+  "OpenRouter refuse cette clé (authentification refusée). Causes possibles : clé invalide, expirée ou révoquée. Vérifiez-la sur openrouter.ai/settings/keys, puis enregistrez une clé d'API normale.";
 const MESSAGE_NO_CREDIT = 'Crédit OpenRouter insuffisant pour cette clé : rechargez votre compte, puis réessayez.';
 const MESSAGE_RATE_LIMITED = "Trop de requêtes envoyées à OpenRouter d'un coup. Réessayez dans une minute.";
 const MESSAGE_OK = "Clé acceptée par OpenRouter : l'inférence fonctionne.";
@@ -130,7 +136,7 @@ export async function testOpenRouterKey(
 
   if (account.status !== 200) {
     if (account.status === 401 || account.status === 403) {
-      return { ok: false, verdict: 'inference-refused', message: MESSAGE_INFERENCE_REFUSED };
+      return { ok: false, verdict: 'inference-refused', message: MESSAGE_KEY_REFUSED };
     }
     if (account.status === 402) return { ok: false, verdict: 'no-credit', message: MESSAGE_NO_CREDIT };
     if (account.status === 429) return { ok: false, verdict: 'rate-limited', message: MESSAGE_RATE_LIMITED };
