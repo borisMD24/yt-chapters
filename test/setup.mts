@@ -50,10 +50,23 @@ for (const entry of readdirSync(tmp, { withFileTypes: true })) {
 
 const runDir = mkdtempSync(join(tmp, `ckr-test-${process.pid}-`));
 
-if (!process.env.DB_PATH) process.env.DB_PATH = join(runDir, 'test.db');
+// Marqueurs lus par `test/hermetic-env.test.ts` : ils distinguent « valeur posée
+// ici » (on exige alors un dossier temporaire propre à l'exécution) de « valeur
+// fournie par l'appelant » (on exige seulement qu'elle ne soit ni la base ni le
+// dossier média du dépôt). Un développeur peut ainsi passer sa propre base de
+// contrôle sans rendre la suite rouge.
+if (!process.env.DB_PATH) {
+  process.env.DB_PATH = join(runDir, 'test.db');
+  process.env.CKR_TEST_DB_SOURCE = 'preload';
+} else {
+  process.env.CKR_TEST_DB_SOURCE = 'caller';
+}
 if (!process.env.MEDIA_DIR) {
   process.env.MEDIA_DIR = join(runDir, 'media');
   mkdirSync(process.env.MEDIA_DIR, { recursive: true });
+  process.env.CKR_TEST_MEDIA_SOURCE = 'preload';
+} else {
+  process.env.CKR_TEST_MEDIA_SOURCE = 'caller';
 }
 
 // Nettoyage immédiat : supprime le dossier de CETTE exécution à la sortie quand
