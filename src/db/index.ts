@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import * as schema from './schema';
 import { ensureAppSettingsTable } from './app-settings';
+import { ensureVideosMediaPathColumn } from './media-path';
 
 /** Chemin du fichier SQLite (affiché par la section d'administration). */
 export const dbPath = process.env.DB_PATH ?? 'data/chapters.db';
@@ -17,5 +18,8 @@ sqlite.pragma('foreign_keys = ON');
 // Auto-réparation : la table des réglages est créée de façon idempotente au
 // démarrage, sans dépendre de `npm run db:push` (voir src/db/app-settings.ts).
 ensureAppSettingsTable(sqlite);
+
+// Idem pour la colonne `videos.media_path` (éditeur de bornes + route média).
+ensureVideosMediaPathColumn(sqlite);
 
 export const db = drizzle(sqlite, { schema });

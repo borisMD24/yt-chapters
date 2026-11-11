@@ -77,6 +77,41 @@ export const defaultMediaProbe: MediaProbeRunner = async (file) => {
   return { durationSec: Number.isFinite(duration) && duration > 0 ? duration : 0, hasAudio };
 };
 
+/** Sonde « piste vidéo présente » (injectable pour les tests). */
+export type VideoProbeRunner = (file: string) => Promise<boolean>;
+
+/**
+ * ffprobe : le fichier contient-il au moins une piste VIDÉO ? Sert à choisir
+ * `<video>` ou `<audio>` dans l'éditeur de bornes. Un échec (outil absent,
+ * fichier illisible) répond `false` : le média reste écoutable en audio.
+ */
+export const defaultVideoProbe: VideoProbeRunner = async (file) => {
+  const { stdout } = await run(
+    'ffprobe',
+    ['-v', 'error', '-select_streams', 'v', '-show_entries', 'stream=codec_type', '-of', 'json', file],
+    BIG,
+  );
+  const parsed = JSON.parse(String(stdout) || '{}') as { streams?: { codec_type?: string }[] };
+  return (parsed.streams ?? []).some((s) => s.codec_type === 'video');
+};
+
+/**
+ * Vrai si le fichier porte une piste vidéo. Ne jette jamais : une sonde en
+ * échec (ou un fichier absent) répond `false`.
+ */
+export async function probeHasVideo(
+  file: string,
+  opts: { probe?: VideoProbeRunner } = {},
+): Promise<boolean> {
+  const probe = opts.probe ?? defaultVideoProbe;
+  try {
+    await stat(file);
+    return await probe(file);
+  } catch {
+    return false;
+  }
+}
+
 /** `ffmpeg -version` / `ffprobe -version` : présence + version du premier segment. */
 export const defaultToolChecker: ToolChecker = async (tool) => {
   try {

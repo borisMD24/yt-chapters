@@ -23,6 +23,8 @@ Génère des chapitres YouTube à partir :
 | `PORT` | `3000` | port HTTP |
 | `MEDIA_DIR` | deux niveaux au-dessus du projet | dossier scanné par l'interface (fichiers audio/vidéo) |
 | `UPLOAD_MAX_MB` | `2048` | plafond d'un fichier envoyé depuis la page (Mo) |
+| `UPLOAD_CACHE_DIR` | `data/uploads` | cache d'envoi (médias conservés pour l'éditeur de bornes) |
+| `UPLOAD_RETENTION_DAYS` | `7` | durée de conservation du cache d'envoi (jours) |
 | `CHAPTER_MIN_GAP_SEC` | `180` | espacement minimal entre chapitres locaux (secondes) |
 
 ## Clé OpenRouter : la base d'abord, puis le `.env`
@@ -62,7 +64,10 @@ Plus besoin de toucher au `.env` : ouvrez la section d'administration.
   > révoquée). Pour transcrire, utilisez une **clé d'API normale** créée sur
   > <https://openrouter.ai/settings/keys>.
 - **Outils et dossiers** : ffmpeg/ffprobe (versions), dossier des médias (avec
-  avertissement s'il est introuvable), plafond d'envoi, chemin de la base.
+  avertissement s'il est introuvable), plafond d'envoi,
+  cache d'envoi (nombre de fichiers, taille, rétention), chemin de la base.
+  Le bouton **Vider le cache** (boucle locale uniquement) supprime les médias conservés ;
+  les chapitres déjà enregistrés ne sont pas touchés.
 
 Les actions d'**écriture** (enregistrer, supprimer, tester) ne sont possibles
 que depuis **cet ordinateur** (boucle locale `127.0.0.1`/`::1`) ; toute autre
@@ -91,26 +96,28 @@ d'administration fonctionne quand même.
 La page propose trois sources, exclusives l'une de l'autre :
 
 - **envoyer un fichier** de l'ordinateur (voie principale) : le navigateur
-  transmet le fichier au serveur, qui l'écrit dans un **dossier temporaire
-  privé** (`ckr-upload-…` sous le dossier temporaire du système) ;
+  transmet le fichier au serveur, qui l'écrit dans le **cache d'envoi**
+  (`UPLOAD_CACHE_DIR`, `data/uploads` par défaut) sous le nom `<sha1>.<ext>` ;
 - **un fichier déjà présent** dans `MEDIA_DIR` (liste déroulante) ;
 - **un chemin saisi** à la main (repli).
 
-Un envoi est **transitoire** : le dossier temporaire est supprimé dès que le
-chapitrage est terminé, en erreur, ou **annulé**. L'annulation n'est pas
-instantanée : la page affiche « Annulation en cours… » et l'état « annulé »
-n'est publié qu'une fois le fichier effectivement supprimé. Au démarrage
-suivant, le serveur supprime aussi les dossiers d'envoi restés d'un arrêt
-brutal (uniquement ceux de plus d'une heure, pour ne jamais gêner un serveur
-en cours). Rien n'est écrit dans le dépôt. Deux envois du **même contenu**
-réutilisent la même ligne d'historique (identifiant dérivé du fichier,
-`local:up-<empreinte>`).
+Un envoi est **conservé** : c'est le contrat de rétention. Le fichier reste dans
+le cache `UPLOAD_RETENTION_DAYS` jours (7 par défaut), ce qui permet d'ouvrir
+l'**éditeur de bornes** (`/edit`) et de réécouter un passage sans réenvoyer le
+média. Au-delà de cet âge il est supprimé au démarrage suivant, et il peut l'être
+immédiatement depuis l'administration (« Vider le cache »). Deux envois du
+**même contenu** ne dupliquent rien : le nom du fichier est l'empreinte du
+contenu, et l'identifiant `local:up-<empreinte>` réutilise la même ligne
+d'historique. Aucun finaliseur n'est attaché au job pour ce fichier — une
+annulation ne peut donc pas rester bloquée en attente d'un nettoyage. Les
+dossiers temporaires de découpage ffmpeg, eux, restent supprimés à la fin du job
+(annulation comprise) : rien n'est écrit dans le dépôt.
 
 ### Exposition de l'envoi de fichier (limite connue)
 
 La route d'envoi n'est **pas authentifiée** et le serveur écoute sur `0.0.0.0` :
 sur un réseau local, n'importe quel hôte joignable peut envoyer un fichier et
-occuper jusqu'à `UPLOAD_MAX_MB` dans le dossier temporaire du système. Les
+occuper jusqu'à `UPLOAD_MAX_MB` dans le cache d'envoi (`UPLOAD_CACHE_DIR`). Les
 autres routes sont bornées par `MEDIA_DIR` ; l'envoi, non. Mesures possibles :
 
 - baisser `UPLOAD_MAX_MB` (plafond d'un envoi) ;
@@ -130,6 +137,14 @@ La page fonctionne hors-ligne : aucun CDN, aucune police externe, aucun build.
 - Résultat copiable, téléchargeable en `.txt`, avec les avertissements YouTube
   en clair (ex. « Il faudrait au moins 3 chapitres »).
 - « Derniers chapitrages » reprend les générations locales récentes.
+- Depuis un chapitrage généré (bouton **Ajuster les bornes**) ou depuis
+  « Derniers chapitrages », la page `/edit?video=<id>` permet de **prévisualiser
+  le média autour de chaque borne** et de déplacer les bornes : une borne par
+  chapitre sur une chronologie graduée, lecteur intégré (`<video>` ou `<audio>`
+  selon le média), déplacement à la souris ou au clavier (Tabulation, flèches,
+  `Maj` pour 5 s), « Définir la borne ici », ajout/suppression de chapitres,
+  titres et horodatages modifiables, avertissements YouTube **non bloquants** et
+  texte d'export tenu à jour après enregistrement.
 
 **Densité des chapitres.** Sur un média local, le modèle a tendance à découper
 trop finement. La page applique donc un **espacement minimal entre chapitres
@@ -153,6 +168,19 @@ n'est pas concerné.
 - `GET /` — page d'interface (HTML autonome, en français).
 - `POST /local/jobs/upload` — envoi d'un fichier (corps brut, `x-filename`
   encodé, `chunkSec`/`lang`/`maxChunks` en requête) → `202 { jobId }`.
+- `GET /media/:id` — sert le média d'un chapitrage local (`Accept-Ranges: bytes`,
+  `Content-Type` selon l'extension, `206` + `Content-Range` pour une plage
+  `Range` unique, `416` si elle est insatisfaisable, `HEAD` supporté). Une plage
+  multiple ou une syntaxe inconnue renvoie `200` avec le fichier entier.
+  L'identifiant doit résoudre à un fichier média **dans** le cache d'envoi ou
+  `MEDIA_DIR` (fichier régulier, extension autorisée), sinon `403`/`404` en
+  français : aucun chemin n'est jamais accepté du client.
+- `GET /videos/:id/edit` — charge utile de l'éditeur de bornes
+  (`{ videoId, title, durationSec, hasVideo, mediaUrl, chapters }`) ; `hasVideo`
+  vient d'une vraie sonde `ffprobe` (fichier avec piste vidéo, ou audio seul).
+- `GET /edit?video=<id>` — page « Ajuster les bornes » : chronologie avec une
+  borne par chapitre, lecteur intégré, aperçu court, titres et horodatages
+  modifiables, enregistrement via les routes de chapitres existantes.
 - `GET /local/media` — fichiers audio/vidéo de `MEDIA_DIR` (`{ dir, files, hint? }`).
 - `POST /local/jobs` — démarre un job (`202 { jobId }`) ; le chemin doit être un
   fichier de `MEDIA_DIR` (sinon `400`/`404`).

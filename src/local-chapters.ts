@@ -43,6 +43,12 @@ export type LocalChaptersResult = {
   videoId: string;
   title: string;
   durationSec: number;
+  /**
+   * Chemin ABSOLU du média analysé (fichier du cache d'envoi ou fichier de
+   * MEDIA_DIR) : persisté dans `videos.media_path` pour servir la route média et
+   * l'éditeur de bornes.
+   */
+  mediaPath: string;
   /** Transcript en mémoire (offsets absolus), non persisté. */
   segments: Segment[];
   chapters: Proposed[];
@@ -147,6 +153,7 @@ export async function generateLocalChapters(
       videoId,
       title,
       durationSec,
+      mediaPath: abs,
       segments,
       chapters,
       text: chaptersToText(chapters),
@@ -159,10 +166,11 @@ export async function generateLocalChapters(
 
 /**
  * Persiste le résultat d'un chapitrage local : une ligne `videos` (id synthétique
- * `local:<sha1>`) et les chapitres générés (`source = llm`) dans une transaction.
- * Les chapitres LLM non validés précédents sont remplacés, comme
- * `/videos/:id/chapters/generate`. Implémentation unique partagée par la route
- * `/local/chapters` et le registre de jobs.
+ * `local:<sha1>`, chemin du média compris) et les chapitres générés
+ * (`source = llm`) dans une transaction. Les chapitres LLM non validés
+ * précédents sont remplacés, comme `/videos/:id/chapters/generate`.
+ * Implémentation unique partagée par la route `/local/chapters` et le registre
+ * de jobs.
  */
 export function persistLocalChapters(result: LocalChaptersResult): void {
   db.transaction((tx) => {
@@ -172,10 +180,15 @@ export function persistLocalChapters(result: LocalChaptersResult): void {
         title: result.title,
         channel: null,
         durationSec: Math.round(result.durationSec),
+        mediaPath: result.mediaPath,
       })
       .onConflictDoUpdate({
         target: videos.id,
-        set: { title: result.title, durationSec: Math.round(result.durationSec) },
+        set: {
+          title: result.title,
+          durationSec: Math.round(result.durationSec),
+          ...(result.mediaPath ? { mediaPath: result.mediaPath } : {}),
+        },
       })
       .run();
 

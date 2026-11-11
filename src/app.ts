@@ -4,6 +4,7 @@
 // (`options.pipeline`) pour les tests, sans toucher aux routes existantes.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { createReadStream } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -14,8 +15,31 @@ import { fetchMeta, fetchTranscript, listChannelVideos } from './youtube';
 import { proposeChapters, buildWarnings, chaptersToText, LLM_MODEL } from './chapters';
 import { generateLocalChapters, persistLocalChapters } from './local-chapters';
 import { createJobRegistry, type JobFailureLogger, type JobInput, type JobPipeline } from './jobs';
-import { MEDIA_EXTENSIONS, UploadError, saveUpload, sweepStaleUploads } from './upload';
-import { checkTools, defaultToolChecker, MEDIA_UNREADABLE_MESSAGE, type ToolChecker } from './media-check';
+import {
+  MEDIA_EXTENSIONS,
+  UploadError,
+  clearUploadCache,
+  findCacheFileByHash,
+  saveUpload,
+  sweepStaleUploads,
+  sweepUploadCache,
+  uploadCacheDir,
+  uploadCacheStats,
+  uploadRetentionDays,
+} from './upload';
+import {
+  MEDIA_NOT_FOUND_MESSAGE,
+  mediaContentType,
+  parseSingleRange,
+  resolveMediaFile,
+} from './media-files';
+import {
+  checkTools,
+  defaultToolChecker,
+  MEDIA_UNREADABLE_MESSAGE,
+  probeHasVideo,
+  type ToolChecker,
+} from './media-check';
 import {
   OPENROUTER_KEY_INVALID_MESSAGE,
   clearOpenRouterKey,
@@ -52,6 +76,10 @@ export const OPENROUTER_KEY_ABSENT_MESSAGE =
 /** Message d'erreur (français) : écriture de la clé impossible. */
 export const ADMIN_STORE_FAILED_MESSAGE =
   "Impossible d'enregistrer la clé dans la base de données. Vérifiez que le dossier est accessible en écriture, puis réessayez.";
+
+/** Message d'erreur (français) : le chapitrage demandé n'existe pas. */
+export const VIDEO_NOT_FOUND_MESSAGE =
+  "Ce chapitrage est introuvable. Il a peut-être été supprimé : revenez à l'accueil et rechargez la liste.";
 
 /**
  * Vrai si l'adresse d'un client est la boucle locale. Les écritures et le test
@@ -169,8 +197,11 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   // Rattrapage des dossiers d'envoi laissés par un arrêt brutal (fichier
   // temporaire jamais récupéré). Non bloquant ; seuls les dossiers vraiment
   // abandonnés (plus vieux qu'une heure) sont supprimés.
+  // Au même moment : rétention du CACHE d'envoi (les médias conservés pour
+  // l'éditeur de bornes sont purgés au-delà de `UPLOAD_RETENTION_DAYS`).
   if (options.sweepStaleUploads !== false) {
     void sweepStaleUploads().catch(() => {});
+    void sweepUploadCache().catch(() => {});
   }
 
   // ---------- helpers ----------
@@ -222,6 +253,13 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     return reply.type('text/html; charset=utf-8').send(html);
   });
 
+  // Éditeur de bornes : page dédiée (vanilla, même style), qui charge le média
+  // et les chapitres côté navigateur via `GET /videos/:id/edit`.
+  app.get('/edit', async (_req, reply) => {
+    const html = await readFile(new URL('./web/edit.html', import.meta.url), 'utf8');
+    return reply.type('text/html; charset=utf-8').send(html);
+  });
+
   // ---------- videos ----------
 
   app.post('/videos', async (req, reply) => {
@@ -252,6 +290,46 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       .orderBy(asc(chapters.startSec))
       .all();
     return { ...video, chapters: chs };
+  });
+
+  /**
+   * Charge l'éditeur de bornes : identifiant, titre, durée, présence d'une piste
+   * vidéo (sonde réelle, pour choisir `<video>` ou `<audio>`), URL du média et
+   * chapitres. Lecture seule : les modifications passent par les routes
+   * existantes (`PATCH /chapters/:id`, `POST /videos/:id/chapters`,
+   * `DELETE /chapters/:id`).
+   */
+  app.get('/videos/:id/edit', async (req, reply) => {
+    const { id } = idParam.parse(req.params);
+    const video = db.select().from(videos).where(eq(videos.id, id)).get();
+    if (!video) return reply.code(404).send({ error: VIDEO_NOT_FOUND_MESSAGE });
+
+    const chs = db
+      .select()
+      .from(chapters)
+      .where(eq(chapters.videoId, id))
+      .orderBy(asc(chapters.startSec))
+      .all();
+
+    const candidate = await mediaCandidatePath(id);
+    const resolved = candidate ? await resolveMediaFile(candidate, mediaRoots()) : null;
+    const playable = !!resolved && resolved.ok;
+    const hasVideo = playable ? await probeHasVideo(resolved.path) : false;
+
+    return {
+      videoId: video.id,
+      title: video.title,
+      durationSec: video.durationSec,
+      hasVideo,
+      mediaUrl: playable ? `/media/${encodeURIComponent(id)}` : null,
+      chapters: chs.map((c) => ({
+        id: c.id,
+        startSec: c.startSec,
+        title: c.title,
+        source: c.source,
+        validated: c.validated,
+      })),
+    };
   });
 
   app.get('/videos/:id/transcript', async (req, reply) => {
@@ -357,6 +435,80 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
 
     const warnings = buildWarnings(chs, { includePending: true });
     return { text: chaptersToText(chs), warnings };
+  });
+
+  // ---------- média (streaming avec plages) ----------
+
+  /**
+   * Chemin candidat pour un identifiant média : la colonne `media_path` de la
+   * ligne `videos` (source chemin comme envoi), sinon — un envoi dont le
+   * chapitrage n'est pas encore persisté — le fichier du cache dont le nom
+   * commence par l'empreinte de l'identifiant. `null` si rien ne correspond.
+   */
+  async function mediaCandidatePath(id: string): Promise<string | null> {
+    const row = db.select({ mediaPath: videos.mediaPath }).from(videos).where(eq(videos.id, id)).get();
+    if (row?.mediaPath) return row.mediaPath;
+    if (id.startsWith('local:up-')) return findCacheFileByHash(id.slice('local:up-'.length));
+    return null;
+  }
+
+  /** Racines autorisées pour servir un média : cache d'envoi et MEDIA_DIR. */
+  function mediaRoots(): string[] {
+    return [uploadCacheDir(), mediaDir()];
+  }
+
+  /**
+   * `GET|HEAD /media/:id` : sert le média avec support des plages.
+   *  - `Accept-Ranges: bytes`, `Content-Length`, `Content-Type` ;
+   *  - `206` + `Content-Range` pour une plage unique valide ;
+   *  - `416` (avec `Content-Range` indiquant la taille) pour une plage insatisfaisable ;
+   *  - plages multiples ou syntaxe inconnue : `200` avec le fichier entier
+   *    (choix documenté : jamais de réponse multipart) ;
+   *  - l'identifiant doit résoudre à un fichier média DANS une racine autorisée,
+   *    sinon `403`/`404` en français. Aucun chemin n'est jamais accepté du client.
+   */
+  app.route({
+    method: ['GET', 'HEAD'],
+    url: '/media/:id',
+    handler: async (req, reply) => {
+      const { id } = idParam.parse(req.params);
+      const candidate = await mediaCandidatePath(id);
+      const resolved = candidate ? await resolveMediaFile(candidate, mediaRoots()) : null;
+      if (!resolved || !resolved.ok) {
+        if (!resolved) return reply.code(404).send({ error: MEDIA_NOT_FOUND_MESSAGE });
+        return reply.code(resolved.status).send({ error: resolved.message });
+      }
+
+      const { path, ext, size } = resolved;
+      const isHead = req.method === 'HEAD';
+      const range = parseSingleRange(req.headers.range as string | undefined, size);
+
+      if (range.kind === 'unsatisfiable') {
+        return reply
+          .code(416)
+          .header('content-range', `bytes */${size}`)
+          .send({ error: 'La plage demandée est en dehors du fichier.' });
+      }
+
+      const contentType = mediaContentType(ext);
+      if (range.kind === 'partial') {
+        const length = range.end - range.start + 1;
+        reply
+          .code(206)
+          .header('accept-ranges', 'bytes')
+          .header('content-type', contentType)
+          .header('content-length', length)
+          .header('content-range', `bytes ${range.start}-${range.end}/${size}`);
+        return isHead ? reply.send() : reply.send(createReadStream(path, { start: range.start, end: range.end }));
+      }
+
+      reply
+        .code(200)
+        .header('accept-ranges', 'bytes')
+        .header('content-type', contentType)
+        .header('content-length', size);
+      return isHead ? reply.send() : reply.send(createReadStream(path));
+    },
   });
 
   // ---------- pipeline de job (local) ----------
@@ -522,8 +674,10 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
 
   // Envoi de fichier : le corps est le fichier brut (`application/octet-stream`),
   // le nom d'origine arrive encodé dans l'en-tête `x-filename`, les options dans
-  // la requête. Le fichier est écrit dans un dossier temporaire privé, supprimé
-  // dès que le job atteint un état terminal (succès, erreur ou annulation).
+  // la requête. Le fichier est écrit dans le CACHE d'envoi sous `<sha1>.<ext>` et
+  // y est CONSERVÉ `UPLOAD_RETENTION_DAYS` jours (7 par défaut) : c'est ce qui
+  // permet d'ouvrir l'éditeur de bornes (`/edit`) et de réécouter un passage sans
+  // réenvoyer le média. Un envoi identique (mêmes octets) réutilise le fichier.
   app.post('/local/jobs/upload', async (req, reply) => {
     const query = uploadQuery.parse(req.query);
 
@@ -564,20 +718,14 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         .send({ error: "L'envoi du fichier a échoué. Réessayez, ou choisissez un autre fichier." });
     }
 
-    // Un fichier vide (envoi interrompu, fichier fantôme) ne produira rien :
-    // refus immédiat en français, et le dossier temporaire est supprimé.
-    if (saved.bytes === 0) {
-      await saved.cleanup();
-      return reply.code(400).send({ error: MEDIA_UNREADABLE_MESSAGE });
-    }
-
+    // Aucun finaliseur d'envoi : le fichier du cache appartient désormais à la
+    // rétention (balayage + « Vider le cache »), pas au cycle de vie du job.
     const job = registry.createJob({
       path: saved.path,
       videoId: `local:up-${saved.sha1.slice(0, 12)}`,
       chunkSec: query.chunkSec,
       lang: query.lang,
       maxChunks: query.maxChunks,
-      onFinished: saved.cleanup,
     });
     return reply.code(202).send({ jobId: job.id });
   });
@@ -653,8 +801,19 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       mediaDir: dir,
       mediaDirExists: await isDirectory(dir),
       uploadMaxMb: uploadMaxMb(),
+      // Cache d'envoi (rétention) : chiffres affichés par l'administration.
+      uploadCache: await uploadCacheStats(),
+      uploadRetentionDays: uploadRetentionDays(),
       dbPath,
     };
+  });
+
+  // Vide le cache d'envoi (médias conservés pour l'éditeur de bornes) et rend
+  // les chiffres AVANT/APRÈS. Écriture : boucle locale uniquement.
+  app.post('/admin/upload-cache/clear', async (req, reply) => {
+    if (!allowLocalOnly(req, reply)) return;
+    const { before, after } = await clearUploadCache();
+    return { before, after };
   });
 
   // Enregistre la clé. Les règles de disponibilité existantes restent l'unique

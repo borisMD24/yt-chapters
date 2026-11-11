@@ -7,6 +7,12 @@ export const videos = sqliteTable('videos', {
   channel: text('channel'),
   durationSec: integer('duration_sec').notNull().default(0),
   transcriptLang: text('transcript_lang'),
+  /**
+   * Chemin du média d'un chapitrage LOCAL (fichier du cache d'envoi ou fichier
+   * de MEDIA_DIR) : permet de servir `GET /media/:id` et de retrouver le média
+   * dans l'éditeur de bornes (`/edit`). `null` pour une vidéo YouTube.
+   */
+  mediaPath: text('media_path'),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .default(sql`(unixepoch())`),

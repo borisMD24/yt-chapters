@@ -407,6 +407,40 @@
         border-color: var(--accent);
         color: var(--accent-strong);
       }
+      /* Lien « Ajuster les bornes » de l'historique : action secondaire. */
+      .history-edit {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 14px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--ink);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .history-edit:hover {
+        border-color: var(--accent);
+        color: var(--accent-strong);
+      }
+      .history-item {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: stretch;
+      }
+      .history-item > a:first-child {
+        flex: 1 1 12ch;
+      }
+      /* Bouton-lien « Ajuster les bornes » (résultat) : même apparence qu'un bouton. */
+      a.btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none;
+        color: var(--ink);
+      }
       .history-meta {
         font-weight: 400;
         color: var(--muted);
@@ -621,6 +655,7 @@
         <div class="row-actions">
           <button id="copy" class="btn btn-primary" type="button">Copier pour YouTube</button>
           <button id="download" class="btn btn-secondary" type="button">Télécharger .txt</button>
+          <a id="edit-link" class="btn btn-secondary" href="#" hidden>Ajuster les bornes</a>
         </div>
         <p id="copy-status" class="status ok" role="status" aria-live="polite"></p>
         <pre id="result-text" class="output" tabindex="0" aria-label="Liste des chapitres à copier"></pre>
@@ -710,6 +745,7 @@
           stepResult: $('step-result'),
           copy: $('copy'),
           download: $('download'),
+          editLink: $('edit-link'),
           copyStatus: $('copy-status'),
           resultText: $('result-text'),
           warnings: $('warnings'),
@@ -1009,6 +1045,7 @@
           els.techError.hidden = true;
           els.techErrorText.textContent = '';
           els.techFold.open = false;
+          els.editLink.hidden = true;
           state.result = null;
           state.maxPercent = 0;
         }
@@ -1204,6 +1241,15 @@
           els.resultText.textContent = result.text || '';
           els.stepResult.hidden = false;
 
+          // Lien vers l'éditeur de bornes : seulement si l'identifiant du
+          // chapitrage est connu (il l'est pour un job terminé).
+          if (result.videoId) {
+            els.editLink.href = '/edit?video=' + encodeURIComponent(result.videoId);
+            els.editLink.hidden = false;
+          } else {
+            els.editLink.hidden = true;
+          }
+
           var list = result.warnings || [];
           if (list.length) {
             els.warningsList.innerHTML = '';
@@ -1329,6 +1375,7 @@
               }
               items.forEach((item) => {
                 var li = document.createElement('li');
+                li.className = 'history-item';
                 var a = document.createElement('a');
                 a.href = '/videos/' + encodeURIComponent(item.videoId) + '/export';
                 a.title = 'Enregistrer ces chapitres dans un fichier texte';
@@ -1344,6 +1391,15 @@
                   exportAndDownload(item);
                 });
                 li.appendChild(a);
+
+                // Accès direct à l'éditeur de bornes (prévisualiser le média).
+                var edit = document.createElement('a');
+                edit.className = 'history-edit';
+                edit.href = '/edit?video=' + encodeURIComponent(item.videoId);
+                edit.textContent = 'Ajuster les bornes';
+                edit.title = 'Prévisualiser le média et ajuster les bornes des chapitres';
+                li.appendChild(edit);
+
                 els.history.appendChild(li);
               });
             })

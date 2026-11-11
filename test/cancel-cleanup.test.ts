@@ -1,8 +1,13 @@
 // Tests du couple annulation / nettoyage du fichier temporaire, du balayage de
 // démarrage et de l'hygiène des erreurs d'envoi.
 //
-// Invariant vérifié : un état terminal (« cancelled », « done », « error »)
-// n'est JAMAIS observable tant que le fichier temporaire existe encore.
+// Invariant vérifié pour un job DOTÉ d'un finaliseur (contrat du registre) : un
+// état terminal (« cancelled », « done », « error ») n'est JAMAIS observable
+// tant que le fichier temporaire existe encore.
+//
+// Depuis le passage au CACHE d'envoi, un envoi n'enregistre plus de finaliseur
+// (le média appartient à la rétention, pas au cycle de vie du job) : on vérifie
+// aussi qu'un job SANS finaliseur ne peut pas rester bloqué en « cancelling ».
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
@@ -172,6 +177,46 @@ for (const testCase of [
     assert.equal(log.runs, 1);
   });
 }
+
+test('un job SANS finaliseur (envoi en cache) ne reste jamais bloqué en « cancelling »', async () => {
+  // Pipeline qui ne se termine que sur annulation : exactement le cas d'un job
+  // d'envoi, qui ne fournit plus de `onFinished` (le média est conservé).
+  const pipeline: JobPipeline = async (_input, { signal }) => {
+    await new Promise<void>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('interrompu')));
+    });
+    return done;
+  };
+  const registry = createJobRegistry(pipeline);
+  const job = registry.createJob({ path: 'cache/clip.mp3' }); // aucun finaliseur
+  await until(() => registry.getJob(job.id)!.status === 'running');
+
+  assert.equal(registry.cancelJob(job.id)!.status, 'cancelling');
+  await until(() => registry.getJob(job.id)!.status === 'cancelled');
+  assert.equal(registry.getJob(job.id)!.message, 'Annulé.');
+  assert.equal(registry.retainedCleanupCount(), 1, 'l’entrée de nettoyage reste inerte (no-op)');
+});
+
+test('annuler un job SANS finaliseur EN ATTENTE publie « cancelled » sans attendre la file', async () => {
+  let release!: () => void;
+  const blocker = new Promise<void>((r) => (release = r));
+  const pipeline: JobPipeline = async (input) => {
+    if (input.path === 'bloque.mp3') await blocker;
+    return done;
+  };
+  const registry = createJobRegistry(pipeline);
+  const running = registry.createJob({ path: 'bloque.mp3' });
+  await until(() => registry.getJob(running.id)!.status === 'running');
+
+  const queued = registry.createJob({ path: 'cache/en-attente.mp3' }); // aucun finaliseur
+  assert.equal(registry.getJob(queued.id)!.status, 'queued');
+  assert.equal(registry.cancelJob(queued.id)!.status, 'cancelling');
+
+  await until(() => registry.getJob(queued.id)!.status === 'cancelled');
+  release();
+  await until(() => registry.getJob(running.id)!.status === 'done');
+  assert.equal(registry.getJob(queued.id)!.status, 'cancelled', 'l’état terminal reste stable');
+});
 
 test('un finaliseur qui échoue ne bloque pas l’état terminal (le balayage reprend la main)', async () => {
   const registry = createJobRegistry(async () => done);

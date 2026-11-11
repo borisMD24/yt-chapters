@@ -68,6 +68,12 @@ if (!process.env.MEDIA_DIR) {
 } else {
   process.env.CKR_TEST_MEDIA_SOURCE = 'caller';
 }
+// Cache d'envoi : jamais `data/uploads` du dépôt pendant les tests. Un test qui
+// veut son propre cache pose `UPLOAD_CACHE_DIR` lui-même (relu à chaque appel).
+if (!process.env.UPLOAD_CACHE_DIR) {
+  process.env.UPLOAD_CACHE_DIR = join(runDir, 'uploads');
+  mkdirSync(process.env.UPLOAD_CACHE_DIR, { recursive: true });
+}
 
 // Nettoyage immédiat : supprime le dossier de CETTE exécution à la sortie quand
 // c'est possible (fichiers non verrouillés) ; sinon le balayage ci-dessus s'en

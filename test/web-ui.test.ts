@@ -126,6 +126,9 @@ test('GET / sert la page HTML avec les libellés français clés', async () => {
   // Le détail technique d'erreur est réellement rendu dans le repli dédié.
   assert.match(html, /id="tech-error-text"/);
   assert.ok(html.includes("Dernière erreur signalée par l'outil"));
+  // Accès à l'éditeur de bornes depuis le résultat et depuis l'historique.
+  assert.ok(html.includes('Ajuster les bornes'), 'lien vers /edit attendu');
+  assert.match(html, /\/edit\?video=/);
   assert.ok(!/https?:\/\/(?!www\.youtube)/.test(html.replace(/OpenRouter/g, '')), 'aucune ressource externe attendue');
 });
 
@@ -295,6 +298,7 @@ test('GET /local/history expose la forme attendue et /videos/:id/export reste co
     videoId: 'local:0123456789abcdef',
     title: 'filmer-le-terrain.mp3',
     durationSec: 180,
+    mediaPath: join(mediaDir, 'filmer-le-terrain.mp3'),
     segments: [],
     chapters: [
       { startSec: 0, title: 'Introduction' },

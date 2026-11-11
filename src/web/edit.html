@@ -1,0 +1,1230 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Ajuster les bornes — chapitrage</title>
+    <style>
+      /* Mêmes jetons de design que la page principale (« atelier » éditorial). */
+      :root {
+        --paper: #f7f4ee;
+        --surface: #ffffff;
+        --surface-2: #fbf9f5;
+        --ink: #1a1714;
+        --muted: #6b635a;
+        --border: #e2dcd2;
+        --border-strong: #cfc7ba;
+        --accent: #b3341f;
+        --accent-strong: #8f2716;
+        --accent-soft: #fbeae6;
+        --ok: #1f6b4a;
+        --ok-soft: #e7f3ec;
+        --warn: #7a4a00;
+        --warn-soft: #fff4e0;
+        --err: #a02020;
+        --err-soft: #fdecec;
+        --radius: 10px;
+        --radius-sm: 6px;
+        --shadow: 0 1px 2px rgba(26, 23, 20, 0.06), 0 10px 30px -18px rgba(26, 23, 20, 0.35);
+        --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        --serif: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
+        --mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Consolas, 'Courier New', monospace;
+        --step-gap: clamp(20px, 4vw, 34px);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 17px;
+        line-height: 1.55;
+      }
+      .wrap {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: clamp(18px, 4vw, 40px) clamp(14px, 4vw, 32px) 64px;
+      }
+      :focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      .masthead {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 20px;
+        margin-bottom: var(--step-gap);
+      }
+      .kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 10px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .rec {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 4px var(--accent-soft);
+      }
+      .masthead h1 {
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: clamp(1.5rem, 4.5vw, 2.2rem);
+        line-height: 1.15;
+        margin: 0 0 10px;
+      }
+      .lede {
+        margin: 0;
+        color: var(--muted);
+        max-width: 62ch;
+      }
+      .step {
+        margin: 0 0 var(--step-gap);
+      }
+      .step h2 {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: 1.22rem;
+        margin: 0 0 12px;
+      }
+      .stepnum {
+        flex: none;
+        display: inline-grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border: 1px solid var(--border-strong);
+        border-radius: 50%;
+        background: var(--surface);
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px;
+        box-shadow: var(--shadow);
+      }
+      .media {
+        width: 100%;
+        border-radius: var(--radius-sm);
+        background: #000;
+      }
+      audio.media {
+        background: var(--surface-2);
+      }
+
+      /* ---------- chronologie ---------- */
+      .timeline {
+        position: relative;
+        height: 74px;
+        margin: 6px 0 4px;
+        border-radius: var(--radius-sm);
+        background: linear-gradient(to bottom, var(--surface-2), #f2ede4);
+        border: 1px solid var(--border);
+        touch-action: none;
+      }
+      .ticks {
+        position: absolute;
+        inset: auto 0 0 0;
+        height: 100%;
+      }
+      .tick {
+        position: absolute;
+        bottom: 0;
+        transform: translateX(-50%);
+        text-align: center;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.62rem;
+        pointer-events: none;
+      }
+      .tick i {
+        display: block;
+        width: 1px;
+        height: 8px;
+        margin: 0 auto 2px;
+        background: var(--border-strong);
+      }
+      .markers {
+        position: absolute;
+        inset: 0;
+      }
+      .marker {
+        position: absolute;
+        top: 4px;
+        width: 16px;
+        height: 40px;
+        padding: 0;
+        transform: translateX(-50%);
+        border: 2px solid var(--accent-strong);
+        border-radius: 3px;
+        background: var(--accent);
+        cursor: ew-resize;
+      }
+      .marker:hover {
+        background: var(--accent-strong);
+      }
+      .marker[aria-pressed='true'] {
+        background: #fff;
+        box-shadow: 0 0 0 3px var(--accent-soft);
+      }
+      .playhead {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: var(--ink);
+        opacity: 0.75;
+        pointer-events: none;
+        transform: translateX(-50%);
+      }
+
+      /* ---------- listes et champs ---------- */
+      .chapter-list {
+        list-style: none;
+        margin: 0 0 14px;
+        padding: 0;
+        display: grid;
+        gap: 8px;
+      }
+      .chapter-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 10px;
+        align-items: center;
+        padding: 10px 12px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+      }
+      .chapter-row.is-selected {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+      .chapter-row .num {
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        color: var(--muted);
+        min-width: 2ch;
+      }
+      .chapter-row input {
+        font: inherit;
+        color: var(--ink);
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+        padding: 8px 10px;
+      }
+      .chapter-row input[data-field='time'] {
+        width: 8ch;
+        font-family: var(--mono);
+        font-variant-numeric: tabular-nums;
+      }
+      .chapter-row input[data-field='title'] {
+        flex: 1 1 12ch;
+        min-width: 8ch;
+      }
+      .row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+      .btn {
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        border-radius: var(--radius);
+        border: 1px solid transparent;
+        padding: 12px 16px;
+        min-height: 46px;
+      }
+      .btn:active {
+        transform: translateY(1px);
+      }
+      .btn[disabled] {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      .btn-primary:hover:not([disabled]) {
+        background: var(--accent-strong);
+      }
+      .btn-secondary {
+        background: var(--surface);
+        color: var(--ink);
+        border-color: var(--border-strong);
+      }
+      .btn-secondary:hover:not([disabled]) {
+        border-color: var(--ink);
+      }
+      .btn-small {
+        padding: 8px 12px;
+        min-height: 40px;
+        font-size: 0.95rem;
+      }
+      .help {
+        font-weight: 400;
+        color: var(--muted);
+        font-size: 0.88rem;
+        margin: 8px 0 0;
+      }
+      .status {
+        margin: 12px 0 0;
+        font-weight: 600;
+        min-height: 1.5em;
+      }
+      .status.ok {
+        color: var(--ok);
+      }
+      .status.err {
+        color: var(--err);
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .output {
+        font-family: var(--mono);
+        font-size: 0.98rem;
+        line-height: 1.7;
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        padding: 14px;
+        margin: 14px 0 0;
+        max-height: 42vh;
+        overflow: auto;
+      }
+      .output:empty::before {
+        content: '(aucun chapitre)';
+        color: var(--muted);
+      }
+      .banner {
+        border-radius: var(--radius);
+        padding: 14px 16px;
+        border: 1px solid transparent;
+        margin-bottom: 14px;
+      }
+      .banner p {
+        margin: 0 0 10px;
+      }
+      .banner :last-child {
+        margin-bottom: 0;
+      }
+      .banner.err {
+        background: var(--err-soft);
+        border-color: #e9b7b7;
+        color: #6f1616;
+      }
+      .banner.warn {
+        background: var(--warn-soft);
+        border-color: #ecd6a8;
+        color: var(--warn);
+      }
+      .banner ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+      footer {
+        border-top: 1px solid var(--border);
+        margin-top: 36px;
+        padding-top: 18px;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      @media (max-width: 420px) {
+        .btn {
+          width: 100%;
+        }
+        .chapter-row .btn {
+          width: 100%;
+        }
+        .timeline {
+          height: 66px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="masthead">
+        <p class="kicker"><span class="rec" aria-hidden="true"></span> Éditeur de bornes</p>
+        <h1>Ajuster les bornes des chapitres</h1>
+        <p class="lede">
+          Écoutez quelques secondes autour de chaque borne, déplacez-la jusqu'au bon endroit, puis enregistrez. La liste
+          reste modifiable au clavier, sans souris.
+        </p>
+      </header>
+
+      <div id="load-error" class="banner err" role="alert" hidden>
+        <p id="load-error-text"></p>
+      </div>
+
+      <section class="step" aria-labelledby="t-media">
+        <h2 id="t-media"><span class="stepnum" aria-hidden="true">1</span> Écouter</h2>
+        <div class="card">
+          <div id="media-warn" class="banner warn" role="status" hidden>
+            <p id="media-warn-text"></p>
+          </div>
+          <video id="media-video" class="media" controls preload="metadata" hidden></video>
+          <audio id="media-audio" class="media" controls preload="metadata" hidden></audio>
+          <p id="media-meta" class="muted" style="margin: 10px 0 0"></p>
+        </div>
+      </section>
+
+      <section class="step" aria-labelledby="t-timeline">
+        <h2 id="t-timeline"><span class="stepnum" aria-hidden="true">2</span> Déplacer une borne</h2>
+        <div class="card">
+          <div id="timeline" class="timeline" role="group" aria-label="Chronologie des chapitres">
+            <div id="ticks" class="ticks" aria-hidden="true"></div>
+            <div id="markers" class="markers"></div>
+            <div id="playhead" class="playhead" aria-hidden="true"></div>
+          </div>
+          <p id="selected-info" class="muted" role="status" style="margin: 10px 0 14px">
+            Aucune borne sélectionnée.
+          </p>
+          <div class="row-actions">
+            <button id="preview-play" class="btn btn-secondary btn-small" type="button">Lecture / pause</button>
+            <button id="nudge-back-5" class="btn btn-secondary btn-small" type="button">− 5 s</button>
+            <button id="nudge-back-1" class="btn btn-secondary btn-small" type="button">− 1 s</button>
+            <button id="nudge-fwd-1" class="btn btn-secondary btn-small" type="button">+ 1 s</button>
+            <button id="nudge-fwd-5" class="btn btn-secondary btn-small" type="button">+ 5 s</button>
+            <button id="set-boundary" class="btn btn-primary btn-small" type="button">Définir la borne ici</button>
+            <button id="add-chapter" class="btn btn-secondary btn-small" type="button">Ajouter un chapitre ici</button>
+          </div>
+          <p class="help">
+            Clavier : Tabulation pour atteindre une borne, Flèches gauche/droite pour la déplacer (Maj = 5 s), Entrée
+            pour la sélectionner, Échap pour la désélectionner. Cliquer une borne la lit quelques secondes.
+          </p>
+        </div>
+      </section>
+
+      <section class="step" aria-labelledby="t-list">
+        <h2 id="t-list"><span class="stepnum" aria-hidden="true">3</span> Titres et horodatages</h2>
+        <ul id="chapter-list" class="chapter-list" aria-label="Chapitres (équivalent textuel de la chronologie)"></ul>
+        <div class="row-actions">
+          <button id="save-all" class="btn btn-primary" type="button">Enregistrer les modifications</button>
+          <button id="reload" class="btn btn-secondary" type="button">Recharger</button>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+        <div id="warnings" class="banner warn" hidden>
+          <p><strong>À vérifier avant de publier</strong></p>
+          <ul id="warnings-list"></ul>
+          <p class="help">
+            Ces règles ne bloquent pas l'enregistrement : l'espacement conseillé à la génération peut être resserré à la
+            main, mais YouTube refuse des chapitres à moins de 10 secondes d'écart.
+          </p>
+        </div>
+      </section>
+
+      <section class="step" aria-labelledby="t-export">
+        <h2 id="t-export"><span class="stepnum" aria-hidden="true">4</span> Texte pour YouTube</h2>
+        <div class="row-actions">
+          <button id="copy" class="btn btn-primary" type="button">Copier pour YouTube</button>
+          <button id="download" class="btn btn-secondary" type="button">Télécharger .txt</button>
+        </div>
+        <p id="copy-status" class="status ok" role="status" aria-live="polite"></p>
+        <pre id="export-text" class="output" tabindex="0" aria-label="Liste des chapitres à copier"></pre>
+      </section>
+
+      <footer>
+        <p class="muted" style="margin: 0"><a href="/">Retour à l'outil de chapitrage</a></p>
+      </footer>
+    </div>
+
+    <script>
+      (() => {
+        'use strict';
+        var $ = (id) => document.getElementById(id);
+
+        /** Durée du court extrait lu quand on clique une borne (secondes). */
+        var PREVIEW_SEC = 8;
+        /** Écart minimal recommandé entre deux chapitres (règle YouTube). */
+        var MIN_GAP_SEC = 10;
+
+        var state = {
+          videoId: '',
+          title: '',
+          durationSec: 0,
+          hasVideo: false,
+          mediaUrl: null,
+          chapters: [],
+          selected: null,
+          deleted: [],
+          original: {},
+        };
+
+        var els = {
+          loadError: $('load-error'),
+          loadErrorText: $('load-error-text'),
+          video: $('media-video'),
+          audio: $('media-audio'),
+          mediaWarn: $('media-warn'),
+          mediaWarnText: $('media-warn-text'),
+          mediaMeta: $('media-meta'),
+          timeline: $('timeline'),
+          ticks: $('ticks'),
+          markers: $('markers'),
+          playhead: $('playhead'),
+          selectedInfo: $('selected-info'),
+          list: $('chapter-list'),
+          status: $('status'),
+          warnings: $('warnings'),
+          warningsList: $('warnings-list'),
+          exportText: $('export-text'),
+          copyStatus: $('copy-status'),
+        };
+
+        // ---------- utilitaires ----------
+
+        function readJson(res) {
+          return res.json().then(
+            function (data) {
+              return { ok: res.ok, status: res.status, data: data };
+            },
+            function () {
+              return { ok: res.ok, status: res.status, data: {} };
+            },
+          );
+        }
+
+        function esc(text) {
+          return String(text == null ? '' : text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+        }
+
+        function pad2(n) {
+          return String(n).padStart(2, '0');
+        }
+
+        /** mm:ss (ou h:mm:ss au-delà d'une heure), format YouTube. */
+        function fmtTs(total) {
+          var s = Math.max(0, Math.floor(total || 0));
+          var h = Math.floor(s / 3600);
+          var m = Math.floor((s % 3600) / 60);
+          var sec = s % 60;
+          return h > 0 ? h + ':' + pad2(m) + ':' + pad2(sec) : m + ':' + pad2(sec);
+        }
+
+        /** Accepte « mm:ss », « h:mm:ss » ou un nombre de secondes ; null sinon. */
+        function parseTs(value) {
+          var text = String(value == null ? '' : value).trim();
+          if (!text) return null;
+          if (/^\d+$/.test(text)) return Number(text);
+          var parts = text.split(':');
+          if (parts.length < 2 || parts.length > 3) return null;
+          var total = 0;
+          for (var i = 0; i < parts.length; i++) {
+            if (!/^\d+$/.test(parts[i].trim())) return null;
+            total = total * 60 + Number(parts[i].trim());
+          }
+          return total;
+        }
+
+        function mediaEl() {
+          return state.hasVideo ? els.video : els.audio;
+        }
+
+        function duration() {
+          var d = state.durationSec || 0;
+          if (d > 0) return d;
+          var el = mediaEl();
+          return el && isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
+        }
+
+        function currentTime() {
+          var el = mediaEl();
+          return el && isFinite(el.currentTime) ? el.currentTime : 0;
+        }
+
+        function setStatus(message, kind) {
+          els.status.className = 'status' + (kind ? ' ' + kind : '');
+          els.status.textContent = message || '';
+        }
+
+        /** Pas de graduation lisible selon la durée (jamais de milliers de traits). */
+        function tickStepSec(total) {
+          if (total <= 600) return 30;
+          if (total <= 1800) return 60;
+          if (total <= 3600) return 300;
+          if (total <= 7200) return 600;
+          return 900;
+        }
+
+        // ---------- rendu ----------
+
+        function markerLabel(chapter, index) {
+          return 'Borne ' + (index + 1) + ' : ' + fmtTs(chapter.startSec) + ' — ' + (chapter.title || 'sans titre');
+        }
+
+        function renderTicks() {
+          var total = duration();
+          if (!(total > 0)) {
+            els.ticks.innerHTML = '';
+            return;
+          }
+          var step = tickStepSec(total);
+          var html = '';
+          for (var t = 0; t <= total; t += step) {
+            html +=
+              '<span class="tick" style="left:' +
+              ((t / total) * 100).toFixed(3) +
+              '%"><i></i>' +
+              fmtTs(t) +
+              '</span>';
+          }
+          els.ticks.innerHTML = html;
+        }
+
+        function renderMarkers() {
+          var total = duration();
+          var html = '';
+          for (var i = 0; i < state.chapters.length; i++) {
+            var c = state.chapters[i];
+            var left = total > 0 ? (c.startSec / total) * 100 : 0;
+            html +=
+              '<button type="button" class="marker" data-index="' +
+              i +
+              '" style="left:' +
+              left.toFixed(3) +
+              '%" aria-pressed="' +
+              (state.selected === i ? 'true' : 'false') +
+              '" aria-label="' +
+              esc(markerLabel(c, i)) +
+              '" title="' +
+              esc(markerLabel(c, i)) +
+              '"></button>';
+          }
+          els.markers.innerHTML = html;
+        }
+
+        function renderPlayhead() {
+          var total = duration();
+          var left = total > 0 ? Math.min(100, (currentTime() / total) * 100) : 0;
+          els.playhead.style.left = left.toFixed(3) + '%';
+        }
+
+        function renderList() {
+          var html = '';
+          for (var i = 0; i < state.chapters.length; i++) {
+            var c = state.chapters[i];
+            html +=
+              '<li class="chapter-row' +
+              (state.selected === i ? ' is-selected' : '') +
+              '" data-index="' +
+              i +
+              '">' +
+              '<span class="num">' +
+              (i + 1) +
+              '</span>' +
+              '<label class="sr-label" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Horodatage du chapitre ' +
+              (i + 1) +
+              '<input data-index="' +
+              i +
+              '" data-field="time" type="text" inputmode="numeric" value="' +
+              esc(fmtTs(c.startSec)) +
+              '" /></label>' +
+              '<label class="sr-label" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Titre du chapitre ' +
+              (i + 1) +
+              '<input data-index="' +
+              i +
+              '" data-field="title" type="text" value="' +
+              esc(c.title) +
+              '" /></label>' +
+              '<span class="muted" aria-hidden="true">' +
+              esc(fmtTs(c.startSec)) +
+              '</span>' +
+              '<button type="button" class="btn btn-secondary btn-small del" data-index="' +
+              i +
+              '" aria-label="Supprimer le chapitre ' +
+              (i + 1) +
+              '">Supprimer</button>' +
+              '</li>';
+          }
+          els.list.innerHTML = html;
+        }
+
+        function renderSelected() {
+          if (state.selected == null || !state.chapters[state.selected]) {
+            els.selectedInfo.textContent = 'Aucune borne sélectionnée.';
+            return;
+          }
+          var c = state.chapters[state.selected];
+          els.selectedInfo.textContent =
+            'Borne sélectionnée : ' +
+            (state.selected + 1) +
+            ' — ' +
+            fmtTs(c.startSec) +
+            ' — ' +
+            (c.title || 'sans titre');
+        }
+
+        /** Chapitres triés par horodatage (l'ordre d'affichage reste modifiable). */
+        function sortedChapters() {
+          return state.chapters.slice().sort(function (a, b) {
+            return a.startSec - b.startSec;
+          });
+        }
+
+        function exportText() {
+          return sortedChapters()
+            .map(function (c) {
+              return fmtTs(c.startSec) + ' ' + (c.title || 'Chapitre');
+            })
+            .join('\n');
+        }
+
+        function renderExport() {
+          els.exportText.textContent = exportText();
+        }
+
+        /** Règles YouTube : avertissement NON bloquant. */
+        function ruleWarnings() {
+          var sorted = sortedChapters();
+          var out = [];
+          if (sorted.length && sorted[0].startSec !== 0) {
+            out.push('Le premier chapitre ne commence pas à 0:00.');
+          }
+          for (var i = 1; i < sorted.length; i++) {
+            var gap = sorted[i].startSec - sorted[i - 1].startSec;
+            if (gap < MIN_GAP_SEC) {
+              out.push('« ' + (sorted[i].title || 'Chapitre') + ' » commence moins de ' + MIN_GAP_SEC + ' s après le précédent.');
+            }
+          }
+          return out;
+        }
+
+        function renderWarnings() {
+          var list = ruleWarnings();
+          if (!list.length) {
+            els.warnings.hidden = true;
+            els.warningsList.innerHTML = '';
+            return;
+          }
+          els.warningsList.innerHTML = list
+            .map(function (w) {
+              return '<li>' + esc(w) + '</li>';
+            })
+            .join('');
+          els.warnings.hidden = false;
+        }
+
+        function render() {
+          renderTicks();
+          renderMarkers();
+          renderPlayhead();
+          renderList();
+          renderSelected();
+          renderExport();
+          renderWarnings();
+        }
+
+        /** Rendu « léger » après une saisie : on ne reconstruit pas les champs. */
+        function renderAfterEdit() {
+          renderMarkers();
+          renderExport();
+          renderWarnings();
+        }
+
+        // ---------- application des données ----------
+
+        function showLoadError(message) {
+          els.loadErrorText.textContent = message;
+          els.loadError.hidden = false;
+        }
+
+        function applyData(data) {
+          els.loadError.hidden = true;
+          state.videoId = data.videoId || '';
+          state.title = data.title || '';
+          state.durationSec = Number(data.durationSec) || 0;
+          state.hasVideo = !!data.hasVideo;
+          state.mediaUrl = data.mediaUrl || null;
+          state.chapters = (data.chapters || []).map(function (c) {
+            return { id: c.id, startSec: Number(c.startSec) || 0, title: c.title || '', source: c.source };
+          });
+          state.selected = state.chapters.length ? 0 : null;
+          state.deleted = [];
+          state.original = {};
+          state.chapters.forEach(function (c) {
+            if (c.id != null) state.original[c.id] = { startSec: c.startSec, title: c.title };
+          });
+
+          els.video.hidden = !state.hasVideo;
+          els.audio.hidden = !!state.hasVideo;
+          var el = mediaEl();
+          if (state.mediaUrl && el) {
+            el.setAttribute('src', state.mediaUrl);
+            el.src = state.mediaUrl;
+          }
+
+          if (!state.mediaUrl) {
+            els.mediaWarnText.textContent =
+              "Le fichier d'origine n'est plus disponible sur cet ordinateur (ou l'envoi a été purgé du cache). Vous pouvez tout de même corriger les horodatages et les titres à la main.";
+            els.mediaWarn.hidden = false;
+          } else {
+            els.mediaWarn.hidden = true;
+          }
+
+          var count = state.chapters.length;
+          els.mediaMeta.textContent =
+            (state.hasVideo ? 'Vidéo' : 'Audio') +
+            ' · ' +
+            fmtTs(state.durationSec) +
+            ' · ' +
+            count +
+            ' chapitre' +
+            (count > 1 ? 's' : '') +
+            (state.title ? ' · ' + state.title : '');
+
+          render();
+        }
+
+        function load(keepStatus) {
+          if (!state.videoId) {
+            showLoadError("Aucun chapitrage n'est indiqué dans l'adresse. Revenez à l'accueil et choisissez « Ajuster les bornes ».");
+            return Promise.resolve();
+          }
+          if (!keepStatus) setStatus('');
+          return fetch('/videos/' + encodeURIComponent(state.videoId) + '/edit')
+            .then(readJson)
+            .then(function (res) {
+              if (!res.ok) {
+                showLoadError((res.data && res.data.error) || "Impossible de charger ce chapitrage.");
+                return;
+              }
+              applyData(res.data || {});
+            })
+            .catch(function () {
+              showLoadError("Impossible de contacter l'outil. Vérifiez qu'il est toujours démarré, puis rechargez la page.");
+            });
+        }
+
+        // ---------- édition ----------
+
+        function clampSec(sec) {
+          var total = duration();
+          var value = Math.max(0, Math.round(sec));
+          return total > 0 ? Math.min(total, value) : value;
+        }
+
+        function select(index) {
+          if (index == null || !state.chapters[index]) return;
+          state.selected = index;
+          renderMarkers();
+          renderList();
+          renderSelected();
+        }
+
+        function deselect() {
+          state.selected = null;
+          renderMarkers();
+          renderList();
+          renderSelected();
+        }
+
+        function setStart(index, sec) {
+          var c = state.chapters[index];
+          if (!c) return;
+          var next = clampSec(sec);
+          if (next === c.startSec) return;
+          c.startSec = next;
+          renderMarkers();
+          renderPlayhead();
+          renderList();
+          renderSelected();
+          renderExport();
+          renderWarnings();
+        }
+
+        function nudge(index, delta) {
+          var c = state.chapters[index];
+          if (!c) return;
+          setStart(index, c.startSec + delta);
+        }
+
+        function requireSelection() {
+          if (state.selected != null && state.chapters[state.selected]) return state.selected;
+          setStatus('Sélectionnez d’abord une borne : cliquez une borne de la chronologie, ou avancez avec Tabulation.', 'err');
+          return null;
+        }
+
+        function seekAndPreview(index) {
+          var c = state.chapters[index];
+          if (!c) return;
+          var el = mediaEl();
+          if (!el) return;
+          try {
+            el.currentTime = c.startSec;
+          } catch (e) {
+            /* média non chargé : on garde le reste utilisable */
+          }
+          renderPlayhead();
+          if (typeof el.play === 'function') {
+            var p = el.play();
+            if (p && typeof p.catch === 'function') p.catch(function () {});
+          }
+          // Extrait court : on s'arrête après PREVIEW_SEC pour ne pas tout écouter.
+          if (typeof setTimeout === 'function') {
+            clearTimeout(state.previewTimer);
+            state.previewTimer = setTimeout(function () {
+              if (typeof el.pause === 'function') el.pause();
+            }, PREVIEW_SEC * 1000);
+          }
+        }
+
+        function addChapter() {
+          var total = duration();
+          var at = clampSec(currentTime());
+          var chapter = { id: null, startSec: at, title: 'Nouveau chapitre', source: 'manual' };
+          state.chapters.push(chapter);
+          state.selected = state.chapters.length - 1;
+          setStatus('Chapitre ajouté à ' + fmtTs(at) + '. Enregistrez pour le conserver.');
+          render();
+          if (total === 0) setStatus('Chapitre ajouté, mais la durée du média est inconnue : vérifiez son horodatage.');
+        }
+
+        function deleteChapter(index) {
+          var c = state.chapters[index];
+          if (!c) return;
+          if (c.id != null) state.deleted.push(c.id);
+          state.chapters.splice(index, 1);
+          if (state.selected != null && state.selected >= state.chapters.length) {
+            state.selected = state.chapters.length ? state.chapters.length - 1 : null;
+          }
+          setStatus('Chapitre supprimé. Enregistrez pour confirmer.');
+          render();
+        }
+
+        function saveAll() {
+          var base = '/videos/' + encodeURIComponent(state.videoId);
+          var tasks = [];
+
+          state.chapters.forEach(function (c, index) {
+            var title = String(c.title || '').trim() || 'Chapitre ' + (index + 1);
+            if (c.id == null) {
+              tasks.push(
+                fetch(base + '/chapters', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ startSec: c.startSec, title: title }),
+                }),
+              );
+              return;
+            }
+            var before = state.original[c.id];
+            if (!before || before.startSec !== c.startSec || before.title !== title) {
+              tasks.push(
+                fetch('/chapters/' + c.id, {
+                  method: 'PATCH',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ startSec: c.startSec, title: title }),
+                }),
+              );
+            }
+          });
+
+          state.deleted.forEach(function (id) {
+            tasks.push(fetch('/chapters/' + id, { method: 'DELETE' }));
+          });
+
+          if (!tasks.length) {
+            setStatus('Aucune modification à enregistrer.', 'ok');
+            return Promise.resolve();
+          }
+
+          return Promise.all(tasks)
+            .then(function () {
+              state.deleted = [];
+              setStatus('Modifications enregistrées.', 'ok');
+              return load(true);
+            })
+            .then(function () {
+              setStatus('Modifications enregistrées.', 'ok');
+            })
+            .catch(function () {
+              setStatus("L'enregistrement a échoué. Vérifiez que l'outil est démarré, puis réessayez.", 'err');
+            });
+        }
+
+        // ---------- chronologie : souris et clavier ----------
+
+        var drag = null;
+
+        function indexFromTarget(ev) {
+          var target = ev && ev.target;
+          var raw = target && target.dataset ? target.dataset.index : undefined;
+          if (raw === undefined || raw === null || raw === '') return null;
+          var index = Number(raw);
+          return isFinite(index) && state.chapters[index] ? index : null;
+        }
+
+        function timelineWidth() {
+          var el = els.timeline;
+          if (typeof el.getBoundingClientRect === 'function') {
+            var rect = el.getBoundingClientRect();
+            if (rect && rect.width > 0) return { width: rect.width, left: rect.left };
+          }
+          return { width: el.clientWidth || el.offsetWidth || 0, left: 0 };
+        }
+
+        function secFromClientX(clientX) {
+          var total = duration();
+          var box = timelineWidth();
+          if (!(total > 0) || !(box.width > 0)) return null;
+          var ratio = (clientX - box.left) / box.width;
+          return clampSec(Math.max(0, Math.min(1, ratio)) * total);
+        }
+
+        function onPointerDown(ev) {
+          var index = indexFromTarget(ev);
+          if (index == null) return;
+          select(index);
+          if (ev.preventDefault) ev.preventDefault();
+          drag = { index: index };
+        }
+
+        function onPointerMove(ev) {
+          if (!drag) return;
+          var sec = secFromClientX(ev.clientX);
+          if (sec == null) return;
+          setStart(drag.index, sec);
+        }
+
+        function onPointerUp() {
+          drag = null;
+        }
+
+        function onMarkersKeydown(ev) {
+          var key = ev && ev.key;
+          var index = indexFromTarget(ev);
+          if (index == null) index = state.selected;
+          if (index == null) return;
+          var step = ev && ev.shiftKey ? 5 : 1;
+
+          if (key === 'ArrowLeft') {
+            nudge(index, -step);
+          } else if (key === 'ArrowRight') {
+            nudge(index, step);
+          } else if (key === 'Enter' || key === ' ') {
+            select(index);
+            seekAndPreview(index);
+          } else if (key === 'Escape') {
+            deselect();
+          } else {
+            return;
+          }
+          if (ev.preventDefault) ev.preventDefault();
+        }
+
+        /** Clic sur une borne : sélection + extrait court. */
+        function onMarkersClick(ev) {
+          var index = indexFromTarget(ev);
+          if (index == null) return;
+          select(index);
+          seekAndPreview(index);
+        }
+
+        /** Clic sur « Supprimer » (délégation dans la liste). */
+        function onListClick(ev) {
+          var target = ev && ev.target;
+          if (!target || !target.classList || !target.classList.contains('del')) return;
+          var index = indexFromTarget(ev);
+          if (index != null) deleteChapter(index);
+        }
+
+        /** Saisie directe d'un horodatage ou d'un titre. */
+        function onListInput(ev) {
+          var target = ev && ev.target;
+          var index = indexFromTarget(ev);
+          if (target == null || index == null || !target.dataset) return;
+          var field = target.dataset.field;
+          if (field === 'time') {
+            var sec = parseTs(target.value);
+            if (sec == null) {
+              setStatus('Horodatage illisible : utilisez mm:ss (par exemple 12:30).', 'err');
+              return;
+            }
+            setStart(index, sec);
+            select(index);
+          } else if (field === 'title') {
+            state.chapters[index].title = target.value;
+            renderAfterEdit();
+          }
+        }
+
+        function nudgeSelected(delta) {
+          var index = requireSelection();
+          if (index == null) return;
+          nudge(index, delta);
+        }
+
+        function setBoundaryHere() {
+          var index = requireSelection();
+          if (index == null) return;
+          setStart(index, currentTime());
+          setStatus('Borne réglée sur la position de lecture.', 'ok');
+        }
+
+        function togglePlay() {
+          var el = mediaEl();
+          if (!el || typeof el.play !== 'function') return;
+          if (el.paused === false && typeof el.pause === 'function') el.pause();
+          else {
+            var p = el.play();
+            if (p && typeof p.catch === 'function') p.catch(function () {});
+          }
+        }
+
+        // ---------- copie / téléchargement ----------
+
+        function legacyCopy(text) {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          var ok = false;
+          try {
+            ta.select();
+            ok = document.execCommand('copy');
+          } catch (e) {
+            ok = false;
+          }
+          document.body.removeChild(ta);
+          return ok;
+        }
+
+        function copyText(text) {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            return navigator.clipboard.writeText(text).then(
+              function () {
+                return true;
+              },
+              function () {
+                return legacyCopy(text);
+              },
+            );
+          }
+          return Promise.resolve(legacyCopy(text));
+        }
+
+        function doCopy() {
+          var text = exportText();
+          if (!text) return;
+          copyText(text).then(function (ok) {
+            els.copyStatus.textContent = ok
+              ? 'Chapitres copiés. Collez-les dans la description de votre vidéo YouTube.'
+              : 'La copie automatique a échoué. Sélectionnez le texte ci-dessous et copiez-le à la main.';
+          });
+        }
+
+        function doDownload() {
+          var text = exportText();
+          if (!text) return;
+          var base = (state.title || 'chapitres').replace(/\.[^.]+$/, '');
+          var blob = new Blob([text + '\n'], { type: 'text/plain;charset=utf-8' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = base + '.txt';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(function () {
+            URL.revokeObjectURL(url);
+          }, 1000);
+        }
+
+        // ---------- branchements ----------
+
+        $('preview-play').addEventListener('click', togglePlay);
+        $('nudge-back-1').addEventListener('click', function () {
+          nudgeSelected(-1);
+        });
+        $('nudge-fwd-1').addEventListener('click', function () {
+          nudgeSelected(1);
+        });
+        $('nudge-back-5').addEventListener('click', function () {
+          nudgeSelected(-5);
+        });
+        $('nudge-fwd-5').addEventListener('click', function () {
+          nudgeSelected(5);
+        });
+        $('set-boundary').addEventListener('click', setBoundaryHere);
+        $('add-chapter').addEventListener('click', addChapter);
+        $('save-all').addEventListener('click', saveAll);
+        $('reload').addEventListener('click', function () {
+          load();
+        });
+        $('copy').addEventListener('click', doCopy);
+        $('download').addEventListener('click', doDownload);
+
+        els.markers.addEventListener('pointerdown', onPointerDown);
+        els.markers.addEventListener('click', onMarkersClick);
+        els.markers.addEventListener('keydown', onMarkersKeydown);
+        els.timeline.addEventListener('pointermove', onPointerMove);
+        els.timeline.addEventListener('pointerup', onPointerUp);
+        els.timeline.addEventListener('pointercancel', onPointerUp);
+        els.list.addEventListener('click', onListClick);
+        els.list.addEventListener('input', onListInput);
+        els.list.addEventListener('change', onListInput);
+
+        function onTimeUpdate() {
+          renderPlayhead();
+        }
+        function onPause() {
+          if (typeof clearTimeout === 'function') clearTimeout(state.previewTimer);
+        }
+        if (els.video.addEventListener) els.video.addEventListener('timeupdate', onTimeUpdate);
+        if (els.audio.addEventListener) els.audio.addEventListener('timeupdate', onTimeUpdate);
+        if (els.video.addEventListener) els.video.addEventListener('pause', onPause);
+        if (els.audio.addEventListener) els.audio.addEventListener('pause', onPause);
+
+        // Identifiant de vidéo dans l'adresse : `/edit?video=<id>`.
+        try {
+          var params = new URLSearchParams(location.search);
+          state.videoId = params.get('video') || '';
+        } catch (e) {
+          state.videoId = '';
+        }
+
+        if (!state.videoId) {
+          showLoadError("Aucun chapitrage n'est indiqué dans l'adresse. Revenez à l'accueil et choisissez « Ajuster les bornes ».");
+        } else {
+          load();
+        }
+      })();
+    </script>
+  </body>
+</html>

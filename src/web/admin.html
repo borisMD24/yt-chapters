@@ -378,11 +378,25 @@
             <dd id="media-dir">—</dd>
             <dt>Plafond d'un envoi</dt>
             <dd id="upload-max">—</dd>
+            <dt>Cache d'envoi</dt>
+            <dd id="upload-cache">—</dd>
             <dt>Base de données</dt>
             <dd id="db-path">—</dd>
           </dl>
           <div id="media-warn" class="banner warn" role="status" hidden>
             <p id="media-warn-text"></p>
+          </div>
+
+          <div class="banner warn">
+            <p><strong>Cache d'envoi</strong></p>
+            <p>
+              Les fichiers envoyés depuis la page principale y sont conservés le temps d'ajuster les bornes (7 jours par
+              défaut). Ils ne sont plus supprimés à la fin du chapitrage. Videz le cache si vous devez libérer de
+              l'espace : les chapitres déjà enregistrés restent inchangés, seule la réécoute du média disparaît.
+            </p>
+            <div class="row-actions">
+              <button id="clear-cache" class="btn btn-secondary" type="button">Vider le cache</button>
+            </div>
           </div>
         </div>
       </section>
@@ -419,6 +433,8 @@
           mediaWarn: $('media-warn'),
           mediaWarnText: $('media-warn-text'),
           uploadMax: $('upload-max'),
+          cache: $('upload-cache'),
+          clearCache: $('clear-cache'),
           dbPath: $('db-path'),
         };
 
@@ -454,6 +470,14 @@
           } catch (e) {
             return d.toLocaleString();
           }
+        }
+
+        /** Taille lisible (Ko/Mo) pour les chiffres du cache. */
+        function formatBytes(bytes) {
+          var n = Number(bytes) || 0;
+          if (n >= 1024 * 1024) return (n / (1024 * 1024)).toLocaleString('fr-FR', { maximumFractionDigits: 1 }) + ' Mo';
+          if (n >= 1024) return Math.round(n / 1024) + ' Ko';
+          return n + ' o';
         }
 
         /** Badge : configurée (base ou .env) / refusée (exemple) / absente. */
@@ -501,6 +525,21 @@
           els.mediaDir.textContent = data.mediaDir || '—';
           els.uploadMax.textContent = data.uploadMaxMb ? data.uploadMaxMb + ' Mo' : '—';
           els.dbPath.textContent = data.dbPath || '—';
+
+          var cache = data.uploadCache || {};
+          if (cache.dir) {
+            els.cache.textContent =
+              formatBytes(cache.bytes) +
+              ' · ' +
+              (cache.files || 0) +
+              ' fichier' +
+              ((cache.files || 0) > 1 ? 's' : '') +
+              ' · conservés ' +
+              (data.uploadRetentionDays || 7) +
+              ' jours';
+          } else {
+            els.cache.textContent = '—';
+          }
 
           if (data.mediaDirExists === false) {
             els.mediaWarnText.textContent =
@@ -596,6 +635,27 @@
         els.refresh.addEventListener('click', function () {
           setMessage('', '');
           load();
+        });
+
+        // Vide le cache d'envoi : les médias conservés pour l'éditeur de bornes
+        // sont supprimés (les chapitres enregistrés restent en base).
+        els.clearCache.addEventListener('click', function () {
+          action('/admin/upload-cache/clear', { method: 'POST' }, function (data) {
+            var before = data.before || {};
+            var after = data.after || {};
+            setMessage(
+              'Cache vidé : ' +
+                (before.files || 0) +
+                ' fichier(s) supprimé(s) (' +
+                formatBytes(before.bytes) +
+                '). Il reste ' +
+                (after.files || 0) +
+                ' fichier(s) (' +
+                formatBytes(after.bytes) +
+                ').',
+              'ok',
+            );
+          });
         });
 
         load();

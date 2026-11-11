@@ -75,7 +75,8 @@ function makeEl(id: string): FakeEl {
 /**
  * `routes` reçoit les URL non internes au harnais et doit renvoyer un objet
  * de type `Response` ({ ok, status, json() }). `options.file` permet d'évaluer
- * une autre page (ex. `src/web/admin.html`) avec le même faux DOM.
+ * une autre page (ex. `src/web/admin.html`) avec le même faux DOM ;
+ * `options.location` fournit `location.search` (utile à `/edit?video=…`).
  */
 export function bootPage(
   routes: (url: string, init?: FetchCall['init']) => Promise<unknown> = async () => ({
@@ -83,7 +84,7 @@ export function bootPage(
     status: 200,
     json: async () => ({}),
   }),
-  options: { file?: URL | string } = {},
+  options: { file?: URL | string; location?: { search?: string; pathname?: string } } = {},
 ): Harness {
   const html = readFileSync(options.file ?? new URL('../src/web/index.html', import.meta.url), 'utf8');
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
@@ -115,15 +116,29 @@ export function bootPage(
     'document',
     'navigator',
     'window',
+    'location',
     'fetch',
     'Blob',
     'URL',
+    'URLSearchParams',
     'setTimeout',
     'clearTimeout',
     'console',
     script,
   );
-  run(document, { clipboard: undefined }, {}, fetchImpl, Blob, URL, setTimeout, clearTimeout, console);
+  run(
+    document,
+    { clipboard: undefined },
+    {},
+    { search: options.location?.search ?? '', pathname: options.location?.pathname ?? '/' },
+    fetchImpl,
+    Blob,
+    URL,
+    URLSearchParams,
+    setTimeout,
+    clearTimeout,
+    console,
+  );
 
   return {
     els,
