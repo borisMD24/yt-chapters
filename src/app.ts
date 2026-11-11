@@ -16,6 +16,7 @@ import { generateLocalChapters, persistLocalChapters } from './local-chapters';
 import { createJobRegistry, type JobFailureLogger, type JobInput, type JobPipeline } from './jobs';
 import { MEDIA_EXTENSIONS, UploadError, saveUpload, sweepStaleUploads } from './upload';
 import { checkTools, defaultToolChecker, MEDIA_UNREADABLE_MESSAGE, type ToolChecker } from './media-check';
+import { openRouterKeyStatus } from './openrouter-key';
 
 // Une seule source de vérité pour les extensions acceptées (liste MEDIA_DIR
 // et envoi de fichier).
@@ -434,13 +435,16 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   // ---------- santé (préflight visible par la page) ----------
 
   // ffmpeg/ffprobe sont-ils utilisables ? La page interroge cette route au
-  // chargement pour prévenir AVANT de lancer un chapitrage voué à l'échec.
+  // chargement pour prévenir AVANT de lancer un chapitrage voué à l'échec. On y
+  // joint l'état de la clé de transcription (absente / restée à l'exemple) — la
+  // clé elle-même n'est jamais renvoyée, pas même tronquée.
   app.get('/local/health', async () => {
     const tools = await checkTools(toolChecker);
     const dir = mediaDir();
     return {
       ffmpeg: { ok: tools.ffmpeg.ok, ...(tools.ffmpeg.version ? { version: tools.ffmpeg.version } : {}) },
       ffprobe: { ok: tools.ffprobe.ok, ...(tools.ffprobe.version ? { version: tools.ffprobe.version } : {}) },
+      openrouterKey: openRouterKeyStatus(),
       mediaDir: dir,
       mediaDirExists: await isDirectory(dir),
       uploadMaxMb: uploadMaxMb(),

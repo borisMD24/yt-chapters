@@ -2,6 +2,7 @@
 // et recollage horodaté des chunks. On utilise `fetch` brut (pas le SDK openai)
 // car cet endpoint n'est pas exposé par le SDK.
 import { readFile } from 'node:fs/promises';
+import { openRouterApiKey } from './openrouter-key';
 import type { Segment } from './youtube';
 
 export const DEFAULT_BASE_URL = process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1';
@@ -56,7 +57,10 @@ async function safeText(res: Response): Promise<string> {
 
 /** Transcrit un chunk audio via OpenRouter, avec repli json si verbose_json est refusé. */
 export async function transcribeChunk(o: TranscribeOpts): Promise<TranscribeResult> {
-  const apiKey = o.apiKey ?? process.env.OPENROUTER_API_KEY;
+  // Clé explicite (seam de test) ou lue dans l'environnement : une valeur restée
+  // à l'exemple est traitée comme absente, donc l'échec arrive AVANT tout appel
+  // réseau, avec un message actionnable plutôt qu'un 401 ambigu.
+  const apiKey = o.apiKey ?? openRouterApiKey();
   if (!apiKey) throw new Error('OPENROUTER_API_KEY manquante');
   const baseUrl = (o.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
   const model = o.model ?? STT_MODEL;

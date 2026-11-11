@@ -10,6 +10,16 @@ import { MediaValidationError, MEDIA_TOOLS_MISSING_MESSAGE } from './media-check
 export type JobStatus = 'queued' | 'running' | 'cancelling' | 'done' | 'error' | 'cancelled';
 export type JobPhase = 'chunking' | 'transcribing' | 'chaptering' | 'persisting' | 'done';
 
+/**
+ * Messages français actionnables pour les causes OpenRouter réelles (clé,
+ * crédit, débit). Le détail brut reste dans la trace serveur et dans le repli
+ * « Détails techniques » nettoyé.
+ */
+export const OPENROUTER_KEY_MISSING_MESSAGE =
+  "La clé OpenRouter est manquante ou refusée. Renseignez une clé valide dans le fichier .env (OPENROUTER_API_KEY), puis relancez le serveur.";
+export const OPENROUTER_CREDIT_MESSAGE = 'Crédit OpenRouter insuffisant pour transcrire ce fichier.';
+export const OPENROUTER_RATE_LIMIT_MESSAGE = "Trop de requêtes envoyées à OpenRouter d'un coup. Réessayez dans une minute.";
+
 export type JobInput = {
   path: string;
   chunkSec?: number;
@@ -160,9 +170,16 @@ export function friendlyErrorMessage(err: unknown): string {
   // (fichier muet, illisible, ffmpeg absent) : on le renvoie tel quel.
   if (err instanceof MediaValidationError) return err.message;
   const raw = err instanceof Error ? err.message : String(err);
-  if (/OPENROUTER_API_KEY|clé\s*d'?api|api key/i.test(raw)) {
-    return "Le service de transcription n'est pas configuré. Contactez la personne qui a installé l'outil.";
+  // Clé absente ou refusée : 401/403, en-tête d'authentification manquant, ou
+  // garde-fou local (`OPENROUTER_API_KEY manquante`). Sans cela, l'utilisateur
+  // ne voyait qu'un « réessayez » alors que réessayer ne peut pas marcher.
+  if (
+    /\b401\b|\b403\b|Missing Authentication header|No auth credentials|OPENROUTER_API_KEY|clé\s*d'?api|api key/i.test(raw)
+  ) {
+    return OPENROUTER_KEY_MISSING_MESSAGE;
   }
+  if (/\b402\b|insufficient/i.test(raw)) return OPENROUTER_CREDIT_MESSAGE;
+  if (/\b429\b|too many requests/i.test(raw)) return OPENROUTER_RATE_LIMIT_MESSAGE;
   if (/ffmpeg est introuvable|spawn (ffmpeg|ffprobe) ENOENT/i.test(raw)) {
     return MEDIA_TOOLS_MISSING_MESSAGE;
   }

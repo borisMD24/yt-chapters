@@ -31,8 +31,8 @@ export type LocalChaptersOptions = {
   /**
    * Progression optionnelle (défaut : silencieux, comportement inchangé).
    * `chunking` est émis avant puis après le passage ffmpeg (nombre de morceaux
-   * connu au retour de `chunkToMp3`), `transcribing` après chaque morceau,
-   * puis `chaptering` avant l'appel au LLM.
+   * connu au retour de `chunkToMp3`), `transcribing` AVANT chaque appel STT
+   * (puis après chaque morceau réussi), puis `chaptering` avant l'appel au LLM.
    */
   onProgress?: (e: { phase: 'chunking' | 'transcribing' | 'chaptering'; doneChunks: number; totalChunks: number }) => void;
   /** Annulation coopérative : vérifiée entre les morceaux. */
@@ -119,6 +119,11 @@ export async function generateLocalChapters(
     const transcripts: ChunkTranscript[] = [];
     for (const c of chunks) {
       if (opts.signal?.aborted) throw abortError();
+      // Annonce la transcription AVANT l'appel STT : sans cela, un échec du
+      // tout premier appel était attribué au découpage (la phase ne basculait
+      // qu'après le premier morceau réussi). `doneChunks` reste le nombre de
+      // morceaux DÉJÀ terminés, donc la progression ne recule jamais.
+      report({ phase: 'transcribing', doneChunks: transcripts.length, totalChunks: chunks.length });
       const res = await transcribeFile(c.path, {
         chunkDurationSec: c.durationSec,
         language: opts.lang,

@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { z } from 'zod';
+import { openRouterApiKey } from './openrouter-key';
 
 // Chaptering LLM via OpenRouter (SDK openai avec baseURL OpenRouter).
 const BASE_URL = process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1';
@@ -8,7 +9,7 @@ export const LLM_MODEL = process.env.OPENROUTER_MODEL ?? 'qwen/qwen3.5-27b';
 // Client créé paresseusement : évite d'exiger une clé tant qu'aucun chapitre n'est demandé.
 let client: OpenAI | null = null;
 function getClient(): OpenAI {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = openRouterApiKey();
   if (!apiKey) {
     // Sans ce garde-fou, le SDK retombe sur OPENAI_API_KEY et l'erreur nomme
     // la mauvaise variable (diagnostic trompeur).

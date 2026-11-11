@@ -773,7 +773,8 @@
         // ---------- santé des outils ----------
 
         /**
-         * Interroge /local/health et affiche un bandeau si ffmpeg/ffprobe manque.
+         * Interroge /local/health et affiche un bandeau si ffmpeg/ffprobe manque
+         * ou si la clé de transcription est absente / restée à un exemple.
          * Appelée au chargement (pour prévenir AVANT de lancer) et après un échec
          * (pour rendre la cause visible au même endroit). Jamais bloquante.
          */
@@ -782,23 +783,41 @@
             .then(readJson)
             .then((res) => {
               var data = (res && res.data) || {};
+              var parts = [];
+
               var missing = [];
               if (data.ffmpeg && data.ffmpeg.ok === false) missing.push('ffmpeg');
               if (data.ffprobe && data.ffprobe.ok === false) missing.push('ffprobe');
-              if (!missing.length) {
+              if (missing.length) {
+                var pluriel = missing.length > 1;
+                parts.push(
+                  missing.join(' et ') +
+                    (pluriel ? ' sont introuvables' : ' est introuvable') +
+                    ' sur cet ordinateur. ' +
+                    (pluriel ? 'Installez-les' : 'Installez-le') +
+                    ' (ou ' +
+                    (pluriel ? 'ajoutez-les' : 'ajoutez-le') +
+                    " au PATH), puis relancez le serveur : sans ffmpeg, le chapitrage ne peut pas fonctionner.",
+                );
+              }
+
+              // Clé de transcription : absente ou restée à un exemple du .env.
+              // Le serveur n'envoie jamais la valeur, seulement ce verdict.
+              if (data.openrouterKey && data.openrouterKey.ok === false) {
+                parts.push(
+                  "Le service de transcription n'est pas configuré : " +
+                    (data.openrouterKey.reason === 'placeholder'
+                      ? 'la clé OpenRouter du fichier .env (OPENROUTER_API_KEY) est vide ou contient encore un exemple. Renseignez une clé valide, puis relancez le serveur.'
+                      : 'la clé OpenRouter est absente du fichier .env (OPENROUTER_API_KEY). Renseignez une clé valide, puis relancez le serveur.'),
+                );
+              }
+
+              if (!parts.length) {
                 els.healthText.textContent = '';
                 els.healthBanner.hidden = true;
                 return;
               }
-              var pluriel = missing.length > 1;
-              els.healthText.textContent =
-                missing.join(' et ') +
-                (pluriel ? ' sont introuvables' : ' est introuvable') +
-                ' sur cet ordinateur. ' +
-                (pluriel ? 'Installez-les' : 'Installez-le') +
-                ' (ou ' +
-                (pluriel ? 'ajoutez-les' : 'ajoutez-le') +
-                " au PATH), puis relancez le serveur : sans ffmpeg, le chapitrage ne peut pas fonctionner.";
+              els.healthText.textContent = parts.join(' ');
               els.healthBanner.hidden = false;
             })
             .catch(() => {
