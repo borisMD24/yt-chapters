@@ -21,6 +21,72 @@ Génère des chapitres YouTube à partir :
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | base OpenRouter |
 | `DB_PATH` | `data/chapters.db` | base SQLite |
 | `PORT` | `3000` | port HTTP |
+| `MEDIA_DIR` | deux niveaux au-dessus du projet | dossier scanné par l'interface (fichiers audio/vidéo) |
+| `UPLOAD_MAX_MB` | `2048` | plafond d'un fichier envoyé depuis la page (Mo) |
+| `CHAPTER_MIN_GAP_SEC` | `180` | espacement minimal entre chapitres locaux (secondes) |
+
+## Utiliser l'interface (sans ligne de commande)
+
+1. Démarrez le serveur : `npm start` (le port par défaut est `3000`).
+2. Ouvrez <http://localhost:3000/> dans un navigateur.
+3. Cliquez sur **Choisir un fichier** (ou glissez-déposez le fichier sur la
+   zone prévue), puis **Générer les chapitres**. Suivez la progression, puis
+   cliquez sur **Copier pour YouTube** et collez le texte dans la description
+   de la vidéo.
+
+La page propose trois sources, exclusives l'une de l'autre :
+
+- **envoyer un fichier** de l'ordinateur (voie principale) : le navigateur
+  transmet le fichier au serveur, qui l'écrit dans un **dossier temporaire
+  privé** (`ckr-upload-…` sous le dossier temporaire du système) ;
+- **un fichier déjà présent** dans `MEDIA_DIR` (liste déroulante) ;
+- **un chemin saisi** à la main (repli).
+
+Un envoi est **transitoire** : le dossier temporaire est supprimé dès que le
+chapitrage est terminé, en erreur, ou **annulé**. L'annulation n'est pas
+instantanée : la page affiche « Annulation en cours… » et l'état « annulé »
+n'est publié qu'une fois le fichier effectivement supprimé. Au démarrage
+suivant, le serveur supprime aussi les dossiers d'envoi restés d'un arrêt
+brutal (uniquement ceux de plus d'une heure, pour ne jamais gêner un serveur
+en cours). Rien n'est écrit dans le dépôt. Deux envois du **même contenu**
+réutilisent la même ligne d'historique (identifiant dérivé du fichier,
+`local:up-<empreinte>`).
+
+### Exposition de l'envoi de fichier (limite connue)
+
+La route d'envoi n'est **pas authentifiée** et le serveur écoute sur `0.0.0.0` :
+sur un réseau local, n'importe quel hôte joignable peut envoyer un fichier et
+occuper jusqu'à `UPLOAD_MAX_MB` dans le dossier temporaire du système. Les
+autres routes sont bornées par `MEDIA_DIR` ; l'envoi, non. Mesures possibles :
+
+- baisser `UPLOAD_MAX_MB` (plafond d'un envoi) ;
+- si l'outil ne sert qu'en local, écouter uniquement sur la boucle locale :
+  dans `src/server.ts`, remplacer `host: '0.0.0.0'` par `host: '127.0.0.1'`.
+
+
+La page fonctionne hors-ligne : aucun CDN, aucune police externe, aucun build.
+
+- Progression suivie côté navigateur (`GET /local/jobs/:id`, sondage ~1 s),
+  bouton **Annuler** (`DELETE /local/jobs/:id`).
+- Envoi d'un fichier : `POST /local/jobs/upload` (corps brut
+  `application/octet-stream`, nom d'origine dans l'en-tête `x-filename`
+  encodé, options en paramètres de requête). Réponses : `202` avec `jobId`,
+  `413` si le plafond `UPLOAD_MAX_MB` est dépassé, `415` si le format n'est
+  pas accepté.
+- Résultat copiable, téléchargeable en `.txt`, avec les avertissements YouTube
+  en clair (ex. « Il faudrait au moins 3 chapitres »).
+- « Derniers chapitrages » reprend les générations locales récentes.
+
+**Densité des chapitres.** Sur un média local, le modèle a tendance à découper
+trop finement. La page applique donc un **espacement minimal entre chapitres
+locaux** (`CHAPTER_MIN_GAP_SEC`, 180 s par défaut) : un chapitre qui commence
+moins de trois minutes après le précédent est écarté. Rien n'est inventé,
+fusionné ni renuméroté — les horodatages et les titres proposés sont conservés
+tels quels — et il est normal d'obtenir moins de chapitres qu'annoncé (un
+avertissement s'affiche alors sous la liste). Le chapitrage des vidéos YouTube
+n'est pas concerné.
+
+
 
 ## API
 
@@ -30,6 +96,16 @@ Génère des chapitres YouTube à partir :
 - `POST /local/chapters` — `{ path, chunkSec?, lang?, maxChunks? }` → `{ chapters, text, warnings }`.
   Persiste une ligne `videos` (id synthétique `local:<sha1 du chemin absolu, 16 hex>`)
   et les chapitres générés (`source = llm`) dans une transaction.
+- `GET /` — page d'interface (HTML autonome, en français).
+- `POST /local/jobs/upload` — envoi d'un fichier (corps brut, `x-filename`
+  encodé, `chunkSec`/`lang`/`maxChunks` en requête) → `202 { jobId }`.
+- `GET /local/media` — fichiers audio/vidéo de `MEDIA_DIR` (`{ dir, files, hint? }`).
+- `POST /local/jobs` — démarre un job (`202 { jobId }`) ; le chemin doit être un
+  fichier de `MEDIA_DIR` (sinon `400`/`404`).
+- `GET /local/jobs/:id` — état du job (`queued|running|done|error|cancelled`,
+  phase, progression, message en français, `result`).
+- `DELETE /local/jobs/:id` — annule le job.
+- `GET /local/history` — derniers chapitrages locaux (id, titre, nb de chapitres, date).
 - `GET /videos/:id/export` — description au format YouTube + avertissements
 
 ## CLI (média local)

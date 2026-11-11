@@ -1,0 +1,1344 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Chapitrage — transformer un fichier en chapitres YouTube</title>
+    <style>
+      /* ---------- Direction : « atelier » éditorial, papier chaud, accent terracotta.
+         Signature : le point d'enregistrement (REC) qui balise l'état. ---------- */
+      :root {
+        --paper: #f7f4ee;
+        --surface: #ffffff;
+        --surface-2: #fbf9f5;
+        --ink: #1a1714;
+        --muted: #6b635a;
+        --border: #e2dcd2;
+        --border-strong: #cfc7ba;
+        --accent: #b3341f;
+        --accent-strong: #8f2716;
+        --accent-soft: #fbeae6;
+        --ok: #1f6b4a;
+        --ok-soft: #e7f3ec;
+        --warn: #7a4a00;
+        --warn-soft: #fff4e0;
+        --err: #a02020;
+        --err-soft: #fdecec;
+        --radius: 10px;
+        --radius-sm: 6px;
+        --shadow: 0 1px 2px rgba(26, 23, 20, 0.06), 0 10px 30px -18px rgba(26, 23, 20, 0.35);
+        --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        --serif: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
+        --mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Consolas, 'Courier New', monospace;
+        --step-gap: clamp(20px, 4vw, 34px);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 17px;
+        line-height: 1.55;
+      }
+
+      .wrap {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: clamp(20px, 5vw, 48px) clamp(16px, 5vw, 32px) 64px;
+      }
+
+      :focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+
+      /* ---------- bandeau ---------- */
+      .masthead {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 22px;
+        margin-bottom: var(--step-gap);
+      }
+      .kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 10px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .rec {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 4px var(--accent-soft);
+      }
+      .masthead h1 {
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: clamp(1.7rem, 4.5vw, 2.4rem);
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        margin: 0 0 12px;
+        max-width: 22ch;
+      }
+      .lede {
+        margin: 0;
+        color: var(--muted);
+        max-width: 58ch;
+      }
+
+      /* ---------- étapes ---------- */
+      .step {
+        margin: 0 0 var(--step-gap);
+      }
+      .step h2 {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: 1.28rem;
+        margin: 0 0 14px;
+        letter-spacing: -0.005em;
+      }
+      .stepnum {
+        flex: none;
+        display: inline-grid;
+        place-items: center;
+        width: 27px;
+        height: 27px;
+        border: 1px solid var(--border-strong);
+        border-radius: 50%;
+        background: var(--surface);
+        font-family: var(--mono);
+        font-size: 0.82rem;
+        color: var(--muted);
+        transform: translateY(2px);
+      }
+      .step-note {
+        margin: -6px 0 14px;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      /* ---------- listes de fichiers ---------- */
+      fieldset {
+        border: 0;
+        margin: 0;
+        padding: 0;
+      }
+      .file-list {
+        display: grid;
+        gap: 8px;
+      }
+      .file-option {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 13px 15px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        cursor: pointer;
+        transition: border-color 0.12s ease, background 0.12s ease;
+      }
+      .file-option:hover {
+        border-color: var(--border-strong);
+      }
+      .file-option.is-selected {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+      .file-option input[type='radio'] {
+        flex: none;
+        width: 20px;
+        height: 20px;
+        accent-color: var(--accent);
+        margin: 0;
+      }
+      .file-body {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 10px;
+        min-width: 0;
+      }
+      .file-name {
+        font-weight: 600;
+        word-break: break-word;
+      }
+      .file-size {
+        color: var(--muted);
+        font-size: 0.88rem;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* ---------- replis (details) ---------- */
+      details {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-2);
+      }
+      details + details,
+      .file-list + details {
+        margin-top: 12px;
+      }
+      summary {
+        cursor: pointer;
+        padding: 12px 15px;
+        font-weight: 600;
+        color: var(--ink);
+        border-radius: var(--radius);
+      }
+      summary:hover {
+        color: var(--accent-strong);
+      }
+      details[open] > summary {
+        border-bottom: 1px solid var(--border);
+        border-radius: var(--radius) var(--radius) 0 0;
+      }
+      .fold-body {
+        padding: 16px 15px;
+        display: grid;
+        gap: 16px;
+      }
+
+      /* ---------- champs ---------- */
+      label.field {
+        display: grid;
+        gap: 5px;
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+      input[type='text'],
+      input[type='number'],
+      select {
+        font: inherit;
+        color: var(--ink);
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+        padding: 10px 12px;
+        width: 100%;
+        max-width: 420px;
+      }
+      .help {
+        font-weight: 400;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      /* ---------- boutons ---------- */
+      .btn {
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        border-radius: var(--radius);
+        border: 1px solid transparent;
+        padding: 14px 22px;
+        min-height: 48px;
+        transition: background 0.12s ease, border-color 0.12s ease, transform 0.06s ease;
+      }
+      .btn:active {
+        transform: translateY(1px);
+      }
+      .btn[disabled] {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+        font-size: 1.05rem;
+      }
+      .btn-primary:hover:not([disabled]) {
+        background: var(--accent-strong);
+      }
+      .btn-secondary {
+        background: var(--surface);
+        color: var(--ink);
+        border-color: var(--border-strong);
+      }
+      .btn-secondary:hover:not([disabled]) {
+        border-color: var(--ink);
+      }
+      .row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+
+      /* ---------- progression ---------- */
+      .track {
+        height: 12px;
+        border-radius: 999px;
+        background: #ece6dc;
+        overflow: hidden;
+        margin-bottom: 12px;
+      }
+      .fill {
+        height: 100%;
+        width: 0;
+        border-radius: 999px;
+        background: var(--accent);
+        transition: width 0.35s ease;
+      }
+      .track.indeterminate .fill {
+        width: 35%;
+        animation: sweep 1.3s ease-in-out infinite;
+      }
+      @keyframes sweep {
+        0% {
+          margin-left: -35%;
+        }
+        100% {
+          margin-left: 100%;
+        }
+      }
+      .status {
+        margin: 0 0 14px;
+        font-weight: 600;
+        min-height: 1.5em;
+      }
+      .status.ok {
+        color: var(--ok);
+      }
+
+      /* ---------- bannières ---------- */
+      .banner {
+        border-radius: var(--radius);
+        padding: 15px 17px;
+        border: 1px solid transparent;
+        margin-bottom: 14px;
+      }
+      .banner p {
+        margin: 0 0 10px;
+      }
+      .banner :last-child {
+        margin-bottom: 0;
+      }
+      .banner.err {
+        background: var(--err-soft);
+        border-color: #e9b7b7;
+        color: #6f1616;
+      }
+      .banner.warn {
+        background: var(--warn-soft);
+        border-color: #ecd6a8;
+        color: var(--warn);
+      }
+      .banner ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+
+      /* ---------- résultat ---------- */
+      .output {
+        font-family: var(--mono);
+        font-size: 0.98rem;
+        line-height: 1.7;
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        padding: 16px;
+        margin: 0 0 14px;
+        max-height: 42vh;
+        overflow: auto;
+      }
+      .output:empty::before {
+        content: '(aucun chapitre)';
+        color: var(--muted);
+      }
+      #transcript {
+        font-family: var(--sans);
+        font-size: 0.95rem;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        padding: 15px;
+        margin: 0;
+        max-height: 40vh;
+        overflow: auto;
+      }
+
+      /* ---------- historique ---------- */
+      .history-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 8px;
+      }
+      .history-list a {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 12px;
+        padding: 12px 15px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--ink);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .history-list a:hover {
+        border-color: var(--accent);
+        color: var(--accent-strong);
+      }
+      .history-meta {
+        font-weight: 400;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      /* ---------- zone de dépôt (source principale) ---------- */
+      .dropzone {
+        border: 2px dashed var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        padding: clamp(18px, 4vw, 26px) 18px;
+        text-align: center;
+        transition: border-color 0.12s ease, background 0.12s ease;
+      }
+      .dropzone:hover {
+        border-color: var(--accent);
+      }
+      .dropzone.is-dragover {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+      .dropzone.is-filled {
+        border-style: solid;
+        border-color: var(--accent);
+      }
+      .dropzone-title {
+        font-family: var(--serif);
+        font-size: 1.12rem;
+        margin: 0 0 6px;
+      }
+      .dropzone-hint {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin: 0 0 14px;
+      }
+      .dropzone-hint:last-child {
+        margin: 14px 0 0;
+      }
+      /* Le champ fichier est visuellement masqué mais garde le focus clavier :
+         l'anneau s'affiche alors sur le bouton étiqueté. */
+      #file-input:focus-visible + .btn {
+        outline: 3px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .chosen-file {
+        margin: 12px 0 0;
+        font-weight: 600;
+        color: var(--accent-strong);
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        margin-top: 40px;
+        padding-top: 20px;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      @media (max-width: 420px) {
+        .btn {
+          width: 100%;
+        }
+        .row-actions {
+          gap: 10px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          animation: none !important;
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="masthead">
+        <p class="kicker"><span class="rec" aria-hidden="true"></span> Atelier de chapitrage</p>
+        <h1>Transformer un fichier en chapitres YouTube</h1>
+        <p class="lede">
+          Choisissez un fichier de votre ordinateur, lancez la transcription, puis copiez la liste de chapitres
+          dans la description de votre vidéo. Tout se passe sur cet ordinateur.
+        </p>
+      </header>
+
+      <noscript>
+        <div class="banner warn">
+          <p>Cette page a besoin de JavaScript pour fonctionner. Activez-le puis rechargez la page.</p>
+        </div>
+      </noscript>
+
+      <!-- Étape 1 -->
+      <section class="step" aria-labelledby="title-1">
+        <h2 id="title-1"><span class="stepnum" aria-hidden="true">1</span> Choisir un fichier</h2>
+        <div id="dropzone" class="dropzone" role="group" aria-labelledby="dropzone-title">
+          <p id="dropzone-title" class="dropzone-title">Glissez-déposez votre fichier ici</p>
+          <p class="dropzone-hint">Un fichier audio ou vidéo de cet ordinateur.</p>
+          <input id="file-input" class="sr-only" type="file" accept="audio/*,video/*" />
+          <label class="btn btn-primary" for="file-input">Choisir un fichier</label>
+          <p class="dropzone-hint">Formats acceptés : mp3, m4a, wav, flac, ogg, opus, aac, mp4, mkv, mov, webm, avi</p>
+        </div>
+        <p id="upload-info" class="chosen-file" role="status" hidden></p>
+        <details>
+          <summary>Ou choisir un fichier déjà présent sur cet ordinateur</summary>
+          <div class="fold-body">
+            <fieldset>
+              <legend class="sr-only">Fichiers disponibles dans votre dossier</legend>
+              <div id="file-list" class="file-list" aria-busy="true">
+                <p class="muted">Recherche des fichiers…</p>
+              </div>
+            </fieldset>
+            <p id="files-hint" class="step-note" role="status" hidden></p>
+          </div>
+        </details>
+        <details>
+          <summary>Ou saisir un chemin</summary>
+          <div class="fold-body">
+            <label class="field" for="manual-path">
+              Chemin complet du fichier
+              <input
+                id="manual-path"
+                type="text"
+                name="manual-path"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="ex. C:\Vidéos\reportage.mp4"
+              />
+              <span class="help">À utiliser seulement si le fichier n'apparaît pas ailleurs. Dès que vous choisissez un fichier au-dessus, c'est celui-là qui sera transcrit.</span>
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <!-- Étape 2 -->
+      <section class="step" aria-labelledby="title-2">
+        <h2 id="title-2"><span class="stepnum" aria-hidden="true">2</span> Lancer le chapitrage</h2>
+        <p id="chosen" class="step-note" role="status"></p>
+        <div class="row-actions">
+          <button id="generate" class="btn btn-primary" type="button">Générer les chapitres</button>
+        </div>
+        <details>
+          <summary>Options avancées</summary>
+          <div class="fold-body">
+            <label class="field" for="opt-chunk">
+              Durée des morceaux (secondes)
+              <input id="opt-chunk" type="number" min="30" step="30" value="300" inputmode="numeric" />
+              <span class="help">Le fichier est découpé pour la transcription. La valeur par défaut convient.</span>
+            </label>
+            <label class="field" for="opt-lang">
+              Langue parlée
+              <select id="opt-lang">
+                <option value="fr" selected>Français</option>
+                <option value="en">Anglais</option>
+                <option value="es">Espagnol</option>
+                <option value="de">Allemand</option>
+                <option value="it">Italien</option>
+                <option value="pt">Portugais</option>
+              </select>
+            </label>
+            <label class="field" for="opt-max">
+              Nombre de morceaux maximum
+              <input id="opt-max" type="number" min="1" step="1" inputmode="numeric" placeholder="illimité" />
+              <span class="help">Laissez vide pour transcrire tout le fichier.</span>
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <!-- Étape 3 -->
+      <section class="step" id="step-progress" aria-labelledby="title-3" hidden>
+        <h2 id="title-3"><span class="stepnum" aria-hidden="true">3</span> Progression</h2>
+        <div class="track indeterminate" id="track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-labelledby="status">
+          <div class="fill" id="fill"></div>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite">Préparation…</p>
+        <div class="row-actions">
+          <button id="cancel" class="btn btn-secondary" type="button">Annuler</button>
+        </div>
+      </section>
+
+      <!-- Erreur / réessai -->
+      <div id="error-box" class="banner err" role="alert" hidden>
+        <p id="error-text"></p>
+        <button id="retry" class="btn btn-secondary" type="button">Réessayer</button>
+      </div>
+
+      <!-- Étape 4 -->
+      <section class="step" id="step-result" aria-labelledby="title-4" hidden>
+        <h2 id="title-4"><span class="stepnum" aria-hidden="true">4</span> Vos chapitres</h2>
+        <div class="row-actions">
+          <button id="copy" class="btn btn-primary" type="button">Copier pour YouTube</button>
+          <button id="download" class="btn btn-secondary" type="button">Télécharger .txt</button>
+        </div>
+        <p id="copy-status" class="status ok" role="status" aria-live="polite"></p>
+        <pre id="result-text" class="output" tabindex="0" aria-label="Liste des chapitres à copier"></pre>
+        <div id="warnings" class="banner warn" hidden>
+          <p><strong>À vérifier avant de publier</strong></p>
+          <ul id="warnings-list"></ul>
+        </div>
+        <details id="transcript-fold" hidden>
+          <summary>Voir la transcription</summary>
+          <div class="fold-body">
+            <pre id="transcript"></pre>
+          </div>
+        </details>
+      </section>
+
+      <!-- Historique -->
+      <section class="step" aria-labelledby="title-history">
+        <h2 id="title-history"><span class="stepnum" aria-hidden="true">↺</span> Derniers chapitrages</h2>
+        <ul id="history" class="history-list">
+          <li class="muted">Chargement…</li>
+        </ul>
+      </section>
+
+      <footer>
+        <details id="tech-fold">
+          <summary>Détails techniques</summary>
+          <div class="fold-body">
+            <p class="muted" style="margin: 0">
+              Le fichier est découpé avec <strong>ffmpeg</strong>, transcrit avec <strong>Whisper large v3 turbo</strong>
+              (via OpenRouter), puis découpé en chapitres par un modèle de langage. Les règles YouTube appliquées sont
+              un premier chapitre à 0:00, au moins 3 chapitres et un écart minimum de 10 secondes entre deux chapitres.
+            </p>
+            <div id="tech-error" hidden>
+              <p style="margin: 0 0 6px"><strong>Dernière erreur signalée par l'outil</strong></p>
+              <pre id="tech-error-text" style="white-space: pre-wrap; word-break: break-word; margin: 0"></pre>
+            </div>
+          </div>
+        </details>
+      </footer>
+    </div>
+
+    <script>
+      (() => {
+        'use strict';
+        var $ = (id) => document.getElementById(id);
+
+        var state = {
+          selectedPath: '',
+          uploadFile: null,
+          files: [],
+          jobId: null,
+          timer: null,
+          result: null,
+          busy: false,
+          maxPercent: 0,
+          lastStatus: '',
+        };
+
+        var els = {
+          fileList: $('file-list'),
+          filesHint: $('files-hint'),
+          manualPath: $('manual-path'),
+          chosen: $('chosen'),
+          dropzone: $('dropzone'),
+          fileInput: $('file-input'),
+          uploadInfo: $('upload-info'),
+          generate: $('generate'),
+          optChunk: $('opt-chunk'),
+          optLang: $('opt-lang'),
+          optMax: $('opt-max'),
+          stepProgress: $('step-progress'),
+          track: $('track'),
+          fill: $('fill'),
+          status: $('status'),
+          cancel: $('cancel'),
+          errorBox: $('error-box'),
+          errorText: $('error-text'),
+          retry: $('retry'),
+          stepResult: $('step-result'),
+          copy: $('copy'),
+          download: $('download'),
+          copyStatus: $('copy-status'),
+          resultText: $('result-text'),
+          warnings: $('warnings'),
+          warningsList: $('warnings-list'),
+          transcriptFold: $('transcript-fold'),
+          transcript: $('transcript'),
+          history: $('history'),
+          techFold: $('tech-fold'),
+          techError: $('tech-error'),
+          techErrorText: $('tech-error-text'),
+        };
+
+        // ---------- utilitaires ----------
+
+        function formatSize(mb) {
+          if (!isFinite(mb) || mb <= 0) return 'taille inconnue';
+          if (mb >= 1) return mb.toLocaleString('fr-FR', { maximumFractionDigits: 1 }) + ' Mo';
+          return Math.round(mb * 1000) + ' Ko';
+        }
+
+        function formatDate(iso) {
+          var d = new Date(iso);
+          if (isNaN(d.getTime())) return '';
+          try {
+            return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+          } catch (e) {
+            return d.toLocaleDateString();
+          }
+        }
+
+        function showError(message) {
+          els.errorText.textContent = message;
+          els.errorBox.hidden = false;
+        }
+
+        function clearError() {
+          els.errorBox.hidden = true;
+          els.errorText.textContent = '';
+        }
+
+        function setProgress(percent) {
+          if (percent === null) {
+            els.track.classList.add('indeterminate');
+            els.track.removeAttribute('aria-valuenow');
+            return;
+          }
+          // Monotone : la barre ne recule jamais (garantie demandée).
+          if (typeof percent === 'number' && isFinite(percent)) {
+            percent = Math.max(percent, state.maxPercent || 0);
+            state.maxPercent = percent;
+          }
+          els.track.classList.remove('indeterminate');
+          els.track.setAttribute('aria-valuenow', String(Math.round(percent)));
+          els.fill.style.width = Math.max(0, Math.min(100, percent)) + '%';
+        }
+
+        function setBusy(busy) {
+          state.busy = busy;
+          els.generate.disabled = busy;
+        }
+
+        // ---------- étape 1 : sources (envoi, liste, chemin) ----------
+
+        /** Décoche la liste MEDIA_DIR (les sources s'excluent). */
+        function clearListSelection() {
+          var labels = els.fileList.querySelectorAll('.file-option');
+          for (var i = 0; i < labels.length; i++) {
+            var radio = labels[i].querySelector('input');
+            if (radio) radio.checked = false;
+            labels[i].classList.remove('is-selected');
+          }
+        }
+
+        /** Affiche (ou masque) le fichier choisi pour envoi. */
+        function renderUploadInfo() {
+          var file = state.uploadFile;
+          if (file) {
+            els.uploadInfo.textContent =
+              'Fichier à envoyer : ' + file.name + ' (' + formatSize(file.size / 1e6) + ') — cliquez sur « Choisir un fichier » pour le remplacer.';
+            els.uploadInfo.hidden = false;
+            els.dropzone.classList.add('is-filled');
+          } else {
+            els.uploadInfo.textContent = '';
+            els.uploadInfo.hidden = true;
+            els.dropzone.classList.remove('is-filled');
+          }
+        }
+
+        /** Source principale : le fichier à envoyer. */
+        function setUploadFile(file) {
+          state.uploadFile = file || null;
+          if (file) {
+            state.selectedPath = '';
+            els.manualPath.value = '';
+            clearListSelection();
+          }
+          els.fileInput.value = '';
+          renderUploadInfo();
+          updateChoiceNote();
+        }
+
+        function selectFile(path) {
+          state.uploadFile = null;
+          state.selectedPath = path;
+          els.manualPath.value = ''; // la sélection remplace le chemin saisi
+          els.fileInput.value = '';
+          renderUploadInfo();
+          var labels = els.fileList.querySelectorAll('.file-option');
+          for (var i = 0; i < labels.length; i++) {
+            var input = labels[i].querySelector('input');
+            labels[i].classList.toggle('is-selected', !!input && input.value === path);
+          }
+          updateChoiceNote();
+        }
+
+        function onDragOver(ev) {
+          ev.preventDefault();
+          els.dropzone.classList.add('is-dragover');
+        }
+
+        function onDragLeave() {
+          els.dropzone.classList.remove('is-dragover');
+        }
+
+        function onDrop(ev) {
+          ev.preventDefault();
+          els.dropzone.classList.remove('is-dragover');
+          var files = ev.dataTransfer && ev.dataTransfer.files;
+          if (files && files.length) setUploadFile(files[0]);
+        }
+
+        function renderFiles(data) {
+          els.fileList.innerHTML = '';
+          els.filesHint.hidden = true;
+          els.fileList.setAttribute('aria-busy', 'false');
+
+          if (!data.files || data.files.length === 0) {
+            var empty = document.createElement('p');
+            empty.className = 'muted';
+            empty.textContent = 'Aucun fichier audio ou vidéo trouvé dans le dossier des médias.';
+            els.fileList.appendChild(empty);
+            if (data.hint) {
+              els.filesHint.textContent = data.hint;
+              els.filesHint.hidden = false;
+            }
+            return;
+          }
+
+          data.files.forEach((file) => {
+            var label = document.createElement('label');
+            label.className = 'file-option';
+
+            var input = document.createElement('input');
+            input.type = 'radio';
+            input.name = 'media';
+            input.value = file.path;
+            input.addEventListener('change', () => selectFile(file.path));
+
+            var body = document.createElement('span');
+            body.className = 'file-body';
+            var name = document.createElement('span');
+            name.className = 'file-name';
+            name.textContent = file.name;
+            var size = document.createElement('span');
+            size.className = 'file-size';
+            size.textContent = formatSize(file.sizeMB);
+            body.appendChild(name);
+            body.appendChild(size);
+
+            label.appendChild(input);
+            label.appendChild(body);
+            els.fileList.appendChild(label);
+          });
+        }
+
+        function loadMedia() {
+          fetch('/local/media')
+            .then((r) => r.json())
+            .then((data) => renderFiles(data))
+            .catch(() => {
+              els.fileList.setAttribute('aria-busy', 'false');
+              els.fileList.innerHTML = '<p class="muted">Impossible de lire la liste des fichiers.</p>';
+              els.filesHint.textContent = "Vérifiez que l'outil est bien démarré, puis rechargez la page.";
+              els.filesHint.hidden = false;
+            });
+        }
+
+        // ---------- étape 3/4 : job ----------
+
+        // Les sources s'excluent : le fichier à envoyer prime, puis la liste /
+        // le chemin saisi (eux-mêmes exclusifs l'un de l'autre).
+        function currentSource() {
+          if (state.uploadFile) {
+            return {
+              kind: 'upload',
+              path: '',
+              label:
+                'Fichier à envoyer : ' +
+                state.uploadFile.name +
+                ' (' +
+                formatSize(state.uploadFile.size / 1e6) +
+                ')',
+            };
+          }
+          var path = state.selectedPath || els.manualPath.value.trim();
+          if (path) return { kind: 'path', path: path, label: 'Fichier choisi : ' + baseName(path) };
+          return { kind: 'none', path: '', label: 'Aucun fichier choisi pour le moment.' };
+        }
+
+        function chosenPath() {
+          return currentSource().path;
+        }
+
+        function baseName(p) {
+          return (p || '').replace(/^.*[\\/]/, '');
+        }
+
+        function updateChoiceNote() {
+          els.chosen.textContent = currentSource().label;
+        }
+
+        function readOptions() {
+          var opts = {};
+          var chunk = Number(els.optChunk.value);
+          if (chunk > 0) opts.chunkSec = Math.round(chunk);
+          if (els.optLang.value) opts.lang = els.optLang.value;
+          var max = Number(els.optMax.value);
+          if (max > 0) opts.maxChunks = Math.round(max);
+          return opts;
+        }
+
+        function resetProgress() {
+          clearError();
+          els.stepResult.hidden = true;
+          els.copyStatus.textContent = '';
+          els.warnings.hidden = true;
+          els.transcriptFold.hidden = true;
+          els.transcript.textContent = '';
+          els.resultText.textContent = '';
+          els.techError.hidden = true;
+          els.techErrorText.textContent = '';
+          els.techFold.open = false;
+          state.result = null;
+          state.maxPercent = 0;
+        }
+
+        function startJob() {
+          if (state.busy) return;
+          var source = currentSource();
+          if (source.kind === 'none') {
+            showError("Choisissez d'abord un fichier : cliquez sur « Choisir un fichier », prenez un fichier de la liste, ou saisissez un chemin.");
+            return;
+          }
+          resetProgress();
+          setBusy(true);
+          els.stepProgress.hidden = false;
+          els.cancel.hidden = false;
+          els.cancel.disabled = false;
+          setProgress(null);
+          els.status.textContent = source.kind === 'upload' ? 'Envoi du fichier…' : 'Préparation…';
+
+          if (source.kind === 'upload') startUpload(state.uploadFile);
+          else startPathJob(source.path);
+        }
+
+        /** Options avancées sérialisées en paramètres de requête (envoi de fichier). */
+        function optionsQuery() {
+          var opts = readOptions();
+          var parts = [];
+          if (opts.chunkSec) parts.push('chunkSec=' + encodeURIComponent(opts.chunkSec));
+          if (opts.lang) parts.push('lang=' + encodeURIComponent(opts.lang));
+          if (opts.maxChunks) parts.push('maxChunks=' + encodeURIComponent(opts.maxChunks));
+          return parts.length ? '?' + parts.join('&') : '';
+        }
+
+        /** Lit une réponse JSON sans planter si le corps n'est pas du JSON. */
+        function readJson(res) {
+          return res.json().then(
+            function (data) {
+              return { ok: res.ok, status: res.status, data: data };
+            },
+            function () {
+              return { ok: res.ok, status: res.status, data: {} };
+            },
+          );
+        }
+
+        function startPathJob(path) {
+          var body = Object.assign({ path: path }, readOptions());
+          fetch('/local/jobs', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          })
+            .then(readJson)
+            .then((res) => {
+              if (!res.ok || !res.data.jobId) {
+                finishWithError((res.data && res.data.error) || "Impossible de démarrer le chapitrage.");
+                return;
+              }
+              state.jobId = res.data.jobId;
+              pollJob();
+            })
+            .catch(() => finishWithError("Impossible de contacter l'outil. Vérifiez que la fenêtre noire est toujours ouverte."));
+        }
+
+        /** Envoie le fichier brut : le serveur l'écrit dans un dossier temporaire. */
+        function startUpload(file) {
+          fetch('/local/jobs/upload' + optionsQuery(), {
+            method: 'POST',
+            headers: { 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent(file.name) },
+            body: file,
+          })
+            .then(readJson)
+            .then((res) => {
+              if (!res.ok || !res.data.jobId) {
+                finishWithError(uploadErrorMessage(res));
+                return;
+              }
+              state.jobId = res.data.jobId;
+              pollJob();
+            })
+            .catch(() =>
+              finishWithError("L'envoi du fichier a échoué. Vérifiez la connexion avec l'outil, puis réessayez."),
+            );
+        }
+
+        /** Message d'erreur d'envoi en français (le serveur en fournit déjà un). */
+        function uploadErrorMessage(res) {
+          if (res.data && typeof res.data.error === 'string') return res.data.error;
+          if (res.status === 413) return 'Ce fichier est trop volumineux pour être envoyé.';
+          if (res.status === 415) return "Ce format de fichier n'est pas pris en charge.";
+          return "L'envoi du fichier a échoué. Réessayez.";
+        }
+
+        function finishWithError(message, detail) {
+          setBusy(false);
+          stopPolling();
+          els.stepProgress.hidden = true;
+          els.cancel.hidden = true;
+          showError(typeof message === 'string' ? message : "Une erreur est survenue.");
+          if (detail) {
+            // Détail technique nettoyé : rendu dans le repli « Détails techniques ».
+            els.techErrorText.textContent = detail;
+            els.techError.hidden = false;
+            els.techFold.open = true;
+          }
+        }
+
+        function stopPolling() {
+          if (state.timer) {
+            clearTimeout(state.timer);
+            state.timer = null;
+          }
+        }
+
+        function pollJob() {
+          state.timer = null;
+          if (!state.jobId) return;
+          fetch('/local/jobs/' + encodeURIComponent(state.jobId))
+            .then((r) => {
+              // Un job peut disparaître (évincé) : on ne doit jamais rester
+              // bloqué sur « Traitement… » avec le bouton désactivé.
+              if (!r.ok) {
+                var err = new Error('HTTP ' + r.status);
+                err.httpStatus = r.status;
+                throw err;
+              }
+              return r.json();
+            })
+            .then((job) => {
+              applyJob(job);
+              ensurePolling();
+            })
+            .catch((err) => {
+              if (err && err.httpStatus === 404) {
+                finishWithError(
+                  "Ce chapitrage n'est plus disponible (il a peut-être été lancé il y a trop longtemps). Relancez-le : vos fichiers n'ont pas été modifiés.",
+                );
+                return;
+              }
+              finishWithError("Impossible de suivre la progression. Vérifiez que l'outil est toujours démarré.");
+            });
+        }
+
+        /** Continue à interroger le serveur tant que le job n'est pas terminal. */
+        function ensurePolling() {
+          if (!state.jobId || state.timer) return;
+          var status = state.lastStatus;
+          if (status === 'queued' || status === 'running' || status === 'cancelling') {
+            state.timer = setTimeout(pollJob, 1000);
+          }
+        }
+
+        function applyJob(job) {
+          state.lastStatus = job.status;
+          els.stepProgress.hidden = false;
+          els.status.textContent = job.message || 'Traitement…';
+
+          // Le découpage (nombre de morceaux inconnu au départ) reste
+          // indéterminé : seule la transcription alimente la barre, ce qui
+          // évite tout retour en arrière (le découpage émet total=total).
+          if (job.phase === 'transcribing' && job.totalChunks > 0) {
+            setProgress((job.doneChunks / job.totalChunks) * 100);
+          } else {
+            setProgress(null);
+          }
+
+          if (job.status === 'done') {
+            setProgress(100);
+            setBusy(false);
+            stopPolling();
+            els.cancel.hidden = true;
+            els.status.textContent = 'Terminé.';
+            showResult(job.result || {});
+            els.stepProgress.hidden = true;
+          } else if (job.status === 'error') {
+            finishWithError(job.message, job.error);
+          } else if (job.status === 'cancelled') {
+            setBusy(false);
+            stopPolling();
+            els.cancel.hidden = true;
+            els.stepProgress.hidden = true;
+            els.status.textContent = '';
+          }
+        }
+
+        function showResult(result) {
+          state.result = result;
+          els.resultText.textContent = result.text || '';
+          els.stepResult.hidden = false;
+
+          var list = result.warnings || [];
+          if (list.length) {
+            els.warningsList.innerHTML = '';
+            list.forEach((w) => {
+              var li = document.createElement('li');
+              li.textContent = w;
+              els.warningsList.appendChild(li);
+            });
+            els.warnings.hidden = false;
+          } else {
+            els.warnings.hidden = true;
+          }
+
+          var lines = result.transcript || [];
+          if (lines.length) {
+            els.transcript.textContent = lines.map((l) => '[' + fmtTs(l.startSec) + '] ' + l.text).join('\n');
+            els.transcriptFold.hidden = false;
+          } else {
+            els.transcriptFold.hidden = true;
+          }
+
+          loadHistory();
+          var heading = $('title-4');
+          if (heading) heading.setAttribute('tabindex', '-1');
+          if (heading) heading.focus({ preventScroll: false });
+        }
+
+        function fmtTs(total) {
+          var s = Math.max(0, Math.floor(total || 0));
+          var h = Math.floor(s / 3600);
+          var m = Math.floor((s % 3600) / 60);
+          var sec = s % 60;
+          var pad = (n) => String(n).padStart(2, '0');
+          return h > 0 ? h + ':' + pad(m) + ':' + pad(sec) : m + ':' + pad(sec);
+        }
+
+        function cancelJob() {
+          if (!state.jobId) return;
+          els.cancel.disabled = true;
+          // L'arrêt n'est pas instantané : le serveur publie « Annulation en
+          // cours… » puis « Annulé » une fois le fichier temporaire supprimé.
+          // On continue donc à interroger le serveur au lieu de simuler l'arrêt.
+          els.status.textContent = 'Annulation en cours…';
+          fetch('/local/jobs/' + encodeURIComponent(state.jobId), { method: 'DELETE' })
+            .then(readJson)
+            .then((res) => {
+              if (res.data && res.data.status) applyJob(res.data);
+              ensurePolling();
+            })
+            .catch(() => ensurePolling());
+        }
+
+        // ---------- copie / téléchargement ----------
+
+        function copyText(text) {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            return navigator.clipboard.writeText(text).then(
+              () => true,
+              () => legacyCopy(text),
+            );
+          }
+          return Promise.resolve(legacyCopy(text));
+        }
+
+        function legacyCopy(text) {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.top = '-1000px';
+          document.body.appendChild(ta);
+          var ok = false;
+          try {
+            ta.select();
+            ok = document.execCommand('copy');
+          } catch (e) {
+            ok = false;
+          }
+          document.body.removeChild(ta);
+          return ok;
+        }
+
+        function doCopy() {
+          var text = (state.result && state.result.text) || els.resultText.textContent || '';
+          if (!text) return;
+          copyText(text).then((ok) => {
+            els.copyStatus.textContent = ok
+              ? 'Chapitres copiés. Collez-les dans la description de votre vidéo YouTube.'
+              : 'La copie automatique a échoué. Sélectionnez le texte ci-dessus et copiez-le à la main.';
+          });
+        }
+
+        function doDownload() {
+          var text = (state.result && state.result.text) || els.resultText.textContent || '';
+          if (!text) return;
+          var name = state.uploadFile ? state.uploadFile.name : baseName(chosenPath());
+          var base = (name || 'chapitres').replace(/\.[^.]+$/, '');
+          var blob = new Blob([text + '\n'], { type: 'text/plain;charset=utf-8' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = base + '.txt';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+
+        // ---------- historique ----------
+
+        function loadHistory() {
+          fetch('/local/history')
+            .then((r) => r.json())
+            .then((data) => {
+              els.history.innerHTML = '';
+              var items = (data && data.items) || [];
+              if (!items.length) {
+                var li = document.createElement('li');
+                li.className = 'muted';
+                li.textContent = 'Aucun chapitrage pour le moment.';
+                els.history.appendChild(li);
+                return;
+              }
+              items.forEach((item) => {
+                var li = document.createElement('li');
+                var a = document.createElement('a');
+                a.href = '/videos/' + encodeURIComponent(item.videoId) + '/export';
+                a.title = 'Enregistrer ces chapitres dans un fichier texte';
+                var title = document.createElement('span');
+                title.textContent = item.title || 'Sans titre';
+                var meta = document.createElement('span');
+                meta.className = 'history-meta';
+                meta.textContent = item.chapterCount + ' chapitre' + (item.chapterCount > 1 ? 's' : '') + ' · ' + formatDate(item.date);
+                a.appendChild(title);
+                a.appendChild(meta);
+                a.addEventListener('click', (ev) => {
+                  ev.preventDefault();
+                  exportAndDownload(item);
+                });
+                li.appendChild(a);
+                els.history.appendChild(li);
+              });
+            })
+            .catch(() => {
+              els.history.innerHTML = '<li class="muted">Impossible de charger l\'historique.</li>';
+            });
+        }
+
+        function exportAndDownload(item) {
+          fetch('/videos/' + encodeURIComponent(item.videoId) + '/export')
+            .then((r) => r.json())
+            .then((data) => {
+              var base = (item.title || 'chapitres').replace(/\.[^.]+$/, '');
+              var blob = new Blob([(data.text || '') + '\n'], { type: 'text/plain;charset=utf-8' });
+              var url = URL.createObjectURL(blob);
+              var a = document.createElement('a');
+              a.href = url;
+              a.download = base + '.txt';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            })
+            .catch(() => {});
+        }
+
+        // ---------- branchements ----------
+
+        els.generate.addEventListener('click', startJob);
+        els.cancel.addEventListener('click', cancelJob);
+        els.retry.addEventListener('click', () => {
+          clearError();
+          startJob();
+        });
+        els.copy.addEventListener('click', doCopy);
+        els.download.addEventListener('click', doDownload);
+
+        // Zone de dépôt : on empêche le comportement natif du navigateur.
+        els.dropzone.addEventListener('dragover', onDragOver);
+        els.dropzone.addEventListener('dragenter', onDragOver);
+        els.dropzone.addEventListener('dragleave', onDragLeave);
+        els.dropzone.addEventListener('drop', onDrop);
+        els.fileInput.addEventListener('change', () => {
+          if (els.fileInput.files && els.fileInput.files.length) setUploadFile(els.fileInput.files[0]);
+        });
+
+        els.manualPath.addEventListener('input', () => {
+          if (!els.manualPath.value.trim()) {
+            updateChoiceNote();
+            return;
+          }
+          // Le chemin saisi remplace la sélection : les sources s'excluent, ce
+          // qui garantit que le fichier traité est bien celui annoncé.
+          state.selectedPath = '';
+          state.uploadFile = null;
+          els.fileInput.value = '';
+          renderUploadInfo();
+          clearListSelection();
+          updateChoiceNote();
+        });
+
+        // Valeurs par défaut des options avancées, posées ici pour que l'état
+        // du formulaire soit identique au balisage.
+        if (!els.optChunk.value) els.optChunk.value = '300';
+        if (!els.optLang.value) els.optLang.value = 'fr';
+
+        loadMedia();
+        loadHistory();
+        updateChoiceNote();
+      })();
+    </script>
+  </body>
+</html>
