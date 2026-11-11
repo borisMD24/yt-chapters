@@ -3,7 +3,7 @@
 // annulation, plus la sérialisation (un job à la fois).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createJobRegistry, type JobPipeline } from '../src/jobs.ts';
+import { createJobRegistry, sanitizeErrorMessage, type JobPipeline } from '../src/jobs.ts';
 
 const input = { path: 'C:\\media\\reportage.mp3' };
 
@@ -146,4 +146,70 @@ test('getJob renvoie undefined pour un identifiant inconnu', () => {
   const registry = createJobRegistry(async () => ({ videoId: 'x', chapters: [], text: '', warnings: [], durationSec: 1 }));
   assert.equal(registry.getJob('inexistant'), undefined);
   assert.equal(registry.cancelJob('inexistant'), undefined);
+});
+
+test('sanitizeErrorMessage masque clés, chemins Windows, UNC et POSIX', () => {
+  const ffmpeg =
+    'ffmpeg exited with code 1: C:\\Users\\boris\\Vidéos\\reportage final.mp4: Invalid data found when processing input (sk-or-abcd1234efgh)';
+  const out = sanitizeErrorMessage(ffmpeg);
+  assert.ok(!out.includes('boris'), 'le chemin Windows ne doit pas fuiter');
+  assert.ok(!out.includes('reportage final'), 'le nom de fichier ne doit pas fuiter');
+  assert.ok(out.includes('<chemin>'));
+  assert.ok(!out.includes('sk-or-abcd1234efgh'));
+
+  const unc = sanitizeErrorMessage("Impossible de lire \\\\nas\\partage\\entretien.mp4 (EACCES)");
+  assert.ok(!unc.includes('partage'), 'le chemin UNC ne doit pas fuiter');
+  assert.ok(unc.includes('<chemin>'));
+
+  const posix = sanitizeErrorMessage('probe failed for /home/boris/medias/a.mp3');
+  assert.ok(!posix.includes('/home/boris'), 'le chemin POSIX ne doit pas fuiter');
+});
+
+test('les jobs terminés sont évincés au-delà du plafond (le plus récent est gardé)', async () => {
+  const pipeline: JobPipeline = async () => ({
+    videoId: 'x',
+    chapters: [],
+    text: '',
+    warnings: [],
+    durationSec: 1,
+  });
+  const registry = createJobRegistry(pipeline, { maxRetainedFinished: 2 });
+
+  const a = registry.createJob({ path: 'a.mp3' });
+  await until(() => registry.getJob(a.id)!.status === 'done');
+  const b = registry.createJob({ path: 'b.mp3' });
+  await until(() => registry.getJob(b.id)!.status === 'done');
+  const c = registry.createJob({ path: 'c.mp3' });
+  await until(() => registry.getJob(c.id)!.status === 'done');
+
+  assert.equal(registry.getJob(a.id), undefined, 'le plus ancien terminé est évincé');
+  assert.ok(registry.getJob(b.id), 'les suivants restent disponibles');
+  assert.ok(registry.getJob(c.id), 'le plus récent reste disponible');
+});
+
+test('un job actif n\'est jamais évincé par le plafond', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const pipeline: JobPipeline = async (i) => {
+    if (i.path === 'long.mp3') await gate;
+    return { videoId: 'x', chapters: [], text: '', warnings: [], durationSec: 1 };
+  };
+  const registry = createJobRegistry(pipeline, { maxRetainedFinished: 1 });
+
+  const long = registry.createJob({ path: 'long.mp3' });
+  await until(() => registry.getJob(long.id)!.status === 'running');
+
+  // Deux jobs en attente, annulés : chacun devient terminal et déclenche
+  // l'éviction, pendant que `long` tourne encore.
+  const q1 = registry.createJob({ path: 'q1.mp3' });
+  const q2 = registry.createJob({ path: 'q2.mp3' });
+  registry.cancelJob(q1.id);
+  registry.cancelJob(q2.id);
+
+  assert.equal(registry.getJob(long.id)!.status, 'running', 'le job actif est conservé');
+  assert.equal(registry.getJob(q1.id), undefined, 'le plus ancien terminé est évincé');
+  assert.ok(registry.getJob(q2.id), 'le plus récent terminé reste disponible');
+
+  release();
+  await until(() => registry.getJob(long.id)!.status === 'done');
 });

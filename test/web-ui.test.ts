@@ -6,7 +6,7 @@
 // - /local/history (forme) et non-régression des routes existantes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
@@ -22,6 +22,7 @@ writeFileSync(join(mediaDir, 'reportage.mp3'), Buffer.alloc(1_500_000));
 writeFileSync(join(mediaDir, 'entretien.MP4'), Buffer.alloc(500_000));
 writeFileSync(join(mediaDir, 'notes.txt'), 'ceci n\'est pas un média');
 writeFileSync(join(mediaDir, 'sous-titres.srt'), 'ceci non plus');
+mkdirSync(join(mediaDir, 'sous-dossier'));
 
 process.env.MEDIA_DIR = mediaDir;
 process.env.DB_PATH = join(dbDir, 'ui.db');
@@ -122,7 +123,19 @@ test('GET / sert la page HTML avec les libellés français clés', async () => {
   ]) {
     assert.ok(html.includes(label), `libellé manquant : ${label}`);
   }
+  // Le détail technique d'erreur est réellement rendu dans le repli dédié.
+  assert.match(html, /id="tech-error-text"/);
+  assert.ok(html.includes("Dernière erreur signalée par l'outil"));
   assert.ok(!/https?:\/\/(?!www\.youtube)/.test(html.replace(/OpenRouter/g, '')), 'aucune ressource externe attendue');
+});
+
+test('la page ne fait jamais reculer la barre de progression (garde monotone)', async () => {
+  const app = await getApp();
+  const html = (await app.inject({ method: 'GET', url: '/' })).body;
+  // Anti-régression : le découpage émet done=total avant la transcription, donc
+  // il ne doit PAS peindre la barre à 100 % sous peine de recul visible.
+  assert.ok(!/job\.phase === 'chunking' && job\.totalChunks > 0/.test(html), 'le découpage doit rester indéterminé');
+  assert.match(html, /Math\.max\(percent, state\.maxPercent/, 'garde monotone attendue');
 });
 
 test('GET /local/media liste les médias triés et ignore les autres fichiers', async () => {
@@ -174,6 +187,39 @@ test('POST /local/jobs refuse un chemin hors MEDIA_DIR (400) et un fichier absen
 
   const badBody = await app.inject({ method: 'POST', url: '/local/jobs', payload: {} });
   assert.equal(badBody.statusCode, 400);
+});
+
+test('POST /local/jobs rejette une traversée « .. », un dossier et MEDIA_DIR lui-même', async () => {
+  const app = await getApp();
+
+  // Traversée : remonte hors du dossier autorisé.
+  const traversal = await app.inject({
+    method: 'POST',
+    url: '/local/jobs',
+    payload: { path: join(mediaDir, '..', '..', 'ailleurs.mp3') },
+  });
+  assert.equal(traversal.statusCode, 400);
+
+  // Traversée qui ressort puis rentre dans MEDIA_DIR : le chemin est résolu
+  // avant la vérification, donc on obtient 404 (fichier absent), pas 400.
+  const sneaky = await app.inject({
+    method: 'POST',
+    url: '/local/jobs',
+    payload: { path: join(mediaDir, 'sous-dossier', '..', 'absent.mp3') },
+  });
+  assert.equal(sneaky.statusCode, 404);
+
+  // Un dossier (même à l'intérieur de MEDIA_DIR) n'est pas un fichier.
+  const subdir = await app.inject({
+    method: 'POST',
+    url: '/local/jobs',
+    payload: { path: join(mediaDir, 'sous-dossier') },
+  });
+  assert.equal(subdir.statusCode, 404);
+
+  // MEDIA_DIR lui-même : pas un fichier situé *dans* le dossier.
+  const dirItself = await app.inject({ method: 'POST', url: '/local/jobs', payload: { path: mediaDir } });
+  assert.equal(dirItself.statusCode, 400);
 });
 
 test('cycle de vie d\'un job via HTTP : 202, progression, done, sans fuite de clé', async () => {

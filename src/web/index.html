@@ -493,7 +493,7 @@
                 spellcheck="false"
                 placeholder="ex. C:\Vidéos\reportage.mp4"
               />
-              <span class="help">Utile si le fichier n'apparaît pas dans la liste ci-dessus.</span>
+              <span class="help">À utiliser seulement si le fichier n'apparaît pas dans la liste. Si vous cliquez un fichier ci-dessus, c'est celui-là qui sera transcrit.</span>
             </label>
           </div>
         </details>
@@ -502,6 +502,7 @@
       <!-- Étape 2 -->
       <section class="step" aria-labelledby="title-2">
         <h2 id="title-2"><span class="stepnum" aria-hidden="true">2</span> Lancer le chapitrage</h2>
+        <p id="chosen" class="step-note" role="status"></p>
         <div class="row-actions">
           <button id="generate" class="btn btn-primary" type="button">Générer les chapitres</button>
         </div>
@@ -581,7 +582,7 @@
       </section>
 
       <footer>
-        <details>
+        <details id="tech-fold">
           <summary>Détails techniques</summary>
           <div class="fold-body">
             <p class="muted" style="margin: 0">
@@ -589,6 +590,10 @@
               (via OpenRouter), puis découpé en chapitres par un modèle de langage. Les règles YouTube appliquées sont
               un premier chapitre à 0:00, au moins 3 chapitres et un écart minimum de 10 secondes entre deux chapitres.
             </p>
+            <div id="tech-error" hidden>
+              <p style="margin: 0 0 6px"><strong>Dernière erreur signalée par l'outil</strong></p>
+              <pre id="tech-error-text" style="white-space: pre-wrap; word-break: break-word; margin: 0"></pre>
+            </div>
           </div>
         </details>
       </footer>
@@ -599,12 +604,13 @@
         'use strict';
         var $ = (id) => document.getElementById(id);
 
-        var state = { selectedPath: '', files: [], jobId: null, timer: null, result: null, busy: false };
+        var state = { selectedPath: '', files: [], jobId: null, timer: null, result: null, busy: false, maxPercent: 0 };
 
         var els = {
           fileList: $('file-list'),
           filesHint: $('files-hint'),
           manualPath: $('manual-path'),
+          chosen: $('chosen'),
           generate: $('generate'),
           optChunk: $('opt-chunk'),
           optLang: $('opt-lang'),
@@ -627,6 +633,9 @@
           transcriptFold: $('transcript-fold'),
           transcript: $('transcript'),
           history: $('history'),
+          techFold: $('tech-fold'),
+          techError: $('tech-error'),
+          techErrorText: $('tech-error-text'),
         };
 
         // ---------- utilitaires ----------
@@ -661,11 +670,16 @@
           if (percent === null) {
             els.track.classList.add('indeterminate');
             els.track.removeAttribute('aria-valuenow');
-          } else {
-            els.track.classList.remove('indeterminate');
-            els.track.setAttribute('aria-valuenow', String(Math.round(percent)));
-            els.fill.style.width = Math.max(0, Math.min(100, percent)) + '%';
+            return;
           }
+          // Monotone : la barre ne recule jamais (garantie demandée).
+          if (typeof percent === 'number' && isFinite(percent)) {
+            percent = Math.max(percent, state.maxPercent || 0);
+            state.maxPercent = percent;
+          }
+          els.track.classList.remove('indeterminate');
+          els.track.setAttribute('aria-valuenow', String(Math.round(percent)));
+          els.fill.style.width = Math.max(0, Math.min(100, percent)) + '%';
         }
 
         function setBusy(busy) {
@@ -677,11 +691,13 @@
 
         function selectFile(path) {
           state.selectedPath = path;
+          els.manualPath.value = ''; // la sélection remplace le chemin saisi
           var labels = els.fileList.querySelectorAll('.file-option');
           for (var i = 0; i < labels.length; i++) {
             var input = labels[i].querySelector('input');
             labels[i].classList.toggle('is-selected', !!input && input.value === path);
           }
+          updateChoiceNote();
         }
 
         function renderFiles(data) {
@@ -742,9 +758,19 @@
 
         // ---------- étape 3/4 : job ----------
 
+        // Le fichier explicitement cliqué prime ; le champ « saisir un chemin »
+        // ne sert que si aucune sélection n'existe (les deux s'excluent).
         function chosenPath() {
-          var manual = els.manualPath.value.trim();
-          return manual || state.selectedPath;
+          return state.selectedPath || els.manualPath.value.trim();
+        }
+
+        function baseName(p) {
+          return (p || '').replace(/^.*[\\/]/, '');
+        }
+
+        function updateChoiceNote() {
+          var p = chosenPath();
+          els.chosen.textContent = p ? 'Fichier choisi : ' + baseName(p) : 'Aucun fichier choisi pour le moment.';
         }
 
         function readOptions() {
@@ -765,7 +791,11 @@
           els.transcriptFold.hidden = true;
           els.transcript.textContent = '';
           els.resultText.textContent = '';
+          els.techError.hidden = true;
+          els.techErrorText.textContent = '';
+          els.techFold.open = false;
           state.result = null;
+          state.maxPercent = 0;
         }
 
         function startJob() {
@@ -800,12 +830,18 @@
             .catch(() => finishWithError("Impossible de contacter l'outil. Vérifiez que la fenêtre noire est toujours ouverte."));
         }
 
-        function finishWithError(message) {
+        function finishWithError(message, detail) {
           setBusy(false);
           stopPolling();
           els.stepProgress.hidden = true;
           els.cancel.hidden = true;
           showError(typeof message === 'string' ? message : "Une erreur est survenue.");
+          if (detail) {
+            // Détail technique nettoyé : rendu dans le repli « Détails techniques ».
+            els.techErrorText.textContent = detail;
+            els.techError.hidden = false;
+            els.techFold.open = true;
+          }
         }
 
         function stopPolling() {
@@ -834,10 +870,11 @@
           els.stepProgress.hidden = false;
           els.status.textContent = job.message || 'Traitement…';
 
+          // Le découpage (nombre de morceaux inconnu au départ) reste
+          // indéterminé : seule la transcription alimente la barre, ce qui
+          // évite tout retour en arrière (le découpage émet total=total).
           if (job.phase === 'transcribing' && job.totalChunks > 0) {
             setProgress((job.doneChunks / job.totalChunks) * 100);
-          } else if (job.phase === 'chunking' && job.totalChunks > 0) {
-            setProgress(100);
           } else {
             setProgress(null);
           }
@@ -851,7 +888,7 @@
             showResult(job.result || {});
             els.stepProgress.hidden = true;
           } else if (job.status === 'error') {
-            finishWithError(job.message);
+            finishWithError(job.message, job.error);
           } else if (job.status === 'cancelled') {
             setBusy(false);
             stopPolling();
@@ -1040,9 +1077,26 @@
         });
         els.copy.addEventListener('click', doCopy);
         els.download.addEventListener('click', doDownload);
+        els.manualPath.addEventListener('input', () => {
+          if (!els.manualPath.value.trim()) {
+            updateChoiceNote();
+            return;
+          }
+          // Le chemin saisi remplace la sélection : les deux s'excluent, ce qui
+          // garantit que le fichier transcrit est bien celui annoncé.
+          state.selectedPath = '';
+          var labels = els.fileList.querySelectorAll('.file-option');
+          for (var i = 0; i < labels.length; i++) {
+            var radio = labels[i].querySelector('input');
+            if (radio) radio.checked = false;
+            labels[i].classList.remove('is-selected');
+          }
+          updateChoiceNote();
+        });
 
         loadMedia();
         loadHistory();
+        updateChoiceNote();
       })();
     </script>
   </body>

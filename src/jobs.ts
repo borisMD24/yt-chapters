@@ -60,8 +60,12 @@ export type JobRegistry = {
 };
 
 export type JobRegistryOptions = {
-  /** Seam déterministe pour les tests. */
-  newId?: () => string;
+  /**
+   * Nombre de jobs terminés conservés en mémoire. Au-delà, les plus anciens
+   * jobs terminés sont évincés (jamais un job actif) ; le plus récent reste
+   * disponible pour l'affichage.
+   */
+  maxRetainedFinished?: number;
 };
 
 /** Message d'état français déduit de la phase et de l'avancement. */
@@ -80,11 +84,18 @@ function messageFor(job: Job): string {
   }
 }
 
-/** Retire tout secret (clés OpenRouter, tokens Bearer) d'un message d'erreur. */
+/**
+ * Retire tout secret (clés OpenRouter, tokens Bearer) ET tout chemin de fichier
+ * absolu (lecteur Windows `C:\…`, UNC `\\serveur\partage\…`, POSIX `/home/…`)
+ * d'un message d'erreur destiné au navigateur.
+ */
 export function sanitizeErrorMessage(message: string): string {
   return message
     .replace(/sk-[A-Za-z0-9_-]{6,}/g, 'sk-***')
     .replace(/Bearer\s+[A-Za-z0-9._-]{6,}/gi, 'Bearer ***')
+    .replace(/\\\\[^\s"']+/g, '<chemin>')
+    .replace(/[A-Za-z]:\\[^\s"']*/g, '<chemin>')
+    .replace(/\/(?:[^\s"'/]+\/)+[^\s"']*/g, '<chemin>')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 400);
@@ -105,10 +116,36 @@ export function friendlyErrorMessage(err: unknown): string {
 export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOptions = {}): JobRegistry {
   const jobs = new Map<string, Job>();
   const controllers = new Map<string, AbortController>();
+  const maxFinished = opts.maxRetainedFinished ?? 20;
+  /** Ids des jobs terminés, dans l'ordre d'achèvement (le plus récent en dernier). */
+  const finishedOrder: string[] = [];
   let tail: Promise<void> = Promise.resolve();
 
+  const isFinished = (status: JobStatus) => status === 'done' || status === 'error' || status === 'cancelled';
+
+  /**
+   * Libère le controller d'un job terminé et évince les jobs terminés les plus
+   * anciens au-delà du plafond. Les jobs actifs (queued/running) ne sont jamais
+   * évincés ; le résultat le plus récent reste donc disponible pour l'affichage.
+   */
+  function releaseFinished(job: Job): void {
+    // Un job déjà évincé n'a plus rien à libérer : sinon un job en attente
+    // exécuté plus tard réintroduirait son id et évincerait un job plus récent.
+    if (!jobs.has(job.id)) return;
+    controllers.delete(job.id);
+    if (!finishedOrder.includes(job.id)) finishedOrder.push(job.id);
+    while (finishedOrder.length > maxFinished) {
+      const oldest = finishedOrder.shift()!;
+      const candidate = jobs.get(oldest);
+      if (candidate && isFinished(candidate.status)) jobs.delete(oldest);
+    }
+  }
+
   async function run(job: Job, input: JobInput, signal: AbortSignal): Promise<void> {
-    if (job.status === 'cancelled') return;
+    if (job.status === 'cancelled') {
+      releaseFinished(job);
+      return;
+    }
     job.status = 'running';
     try {
       const result = await pipeline(input, {
@@ -128,6 +165,7 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
       if (signal.aborted) {
         job.status = 'cancelled';
         job.message = 'Annulé.';
+        releaseFinished(job);
         return;
       }
       job.result = result;
@@ -135,21 +173,24 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
       job.phase = 'done';
       job.doneChunks = job.totalChunks;
       job.message = 'Chapitres prêts.';
+      releaseFinished(job);
     } catch (err) {
       if (signal.aborted) {
         job.status = 'cancelled';
         job.message = 'Annulé.';
         job.error = undefined;
+        releaseFinished(job);
         return;
       }
       job.status = 'error';
       job.message = friendlyErrorMessage(err);
       job.error = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+      releaseFinished(job);
     }
   }
 
   function createJob(input: JobInput): Job {
-    const id = opts.newId?.() ?? randomUUID();
+    const id = randomUUID();
     const job: Job = {
       id,
       status: 'queued',
@@ -172,10 +213,11 @@ export function createJobRegistry(pipeline: JobPipeline, opts: JobRegistryOption
   function cancelJob(id: string): Job | undefined {
     const job = jobs.get(id);
     if (!job) return undefined;
-    if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') return job;
+    if (isFinished(job.status)) return job;
     job.status = 'cancelled';
     job.message = 'Annulé.';
     controllers.get(id)?.abort();
+    releaseFinished(job);
     return job;
   }
 

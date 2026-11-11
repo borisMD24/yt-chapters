@@ -422,7 +422,8 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         videoId: r.videoId,
         title: r.title,
         chapterCount: Number(r.chapterCount),
-        date: r.date instanceof Date ? r.date.toISOString() : new Date(Number(r.date) * 1000).toISOString(),
+        // `createdAt` est un timestamp Drizzle (mode: 'timestamp') : déjà un Date.
+        date: r.date.toISOString(),
       })),
     };
   });
