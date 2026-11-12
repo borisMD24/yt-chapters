@@ -201,6 +201,37 @@ démarre rien.
 > ici : sur macOS, gardez le dossier dans le Dock, ou lancez `Démarrer.command`
 > depuis le Finder.
 
+### À vérifier en premier sur un vrai Mac
+
+Liste de vérification recommandée (par ordre de valeur) avant de considérer le
+lanceur macOS comme acquis :
+
+1. **Double-clic sur un clone frais.** `git clone`, puis double-clic sur
+   `Démarrer.command` **sans passer par le Terminal** : c'est le chemin réel de
+   l'utilisateur (dossier de travail = dossier du script, fenêtre qui reste
+   ouverte, bit `+x` venu de l'index git).
+2. **Aucun orphelin après `Ctrl+C`.** Pendant que le serveur tourne, faites
+   `Ctrl+C` dans la fenêtre, puis, dans un autre Terminal :
+
+   ```bash
+   pgrep -f 'npm start|tsx'
+   ```
+
+   La commande ne doit **rien** renvoyer : aucun processus `npm`/`tsx` ne doit
+   survivre au lanceur.
+3. **Test de fumée avec le `ffmpeg` de Homebrew.** Relancez avec
+   `--force-install` : la phase d'installation doit passer le test de fumée (1 s
+   de silence **encodée en mp3** puis **relue**) avec le `ffmpeg` réellement
+   installé par Homebrew.
+4. **Installation Homebrew visible.** Un `brew install` doit **défiler en direct**
+   dans la fenêtre (et se retrouver dans `logs/demarrage-<horodatage>.log`),
+   jamais rester muet pendant plusieurs minutes.
+5. **PATH rafraîchi.** Juste après une installation, le lanceur doit retrouver
+   l'outil (Node.js, `ffmpeg`) **sans** qu'on ait besoin de fermer la fenêtre.
+
+> Rappel de la réserve ci-dessus : **le lanceur macOS n'a pas encore été exécuté
+> sur un vrai Mac** — cette liste est précisément ce qui reste à confirmer.
+
 ## Prérequis
 
 - Node 22+ (fetch natif), `ffmpeg`/`ffprobe` dans le `PATH`.

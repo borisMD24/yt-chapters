@@ -260,16 +260,59 @@ repo_revision() {
   printf '%s' "$rev"
 }
 
-# Exécute Homebrew en journalisant sa sortie (jamais bloquant).
+# Exécute Homebrew : sa sortie défile EN DIRECT (ligne à ligne, jamais bufferisée
+# jusqu'à la fin — une installation dure plusieurs minutes et un lanceur muet
+# paraîtrait figé), et chaque ligne reste journalisée dans logs/demarrage-*.log.
 brew_run() {
-  local line out
+  local line
   say_raw "> brew $*"
-  out="$(brew "$@" 2>&1)"
-  if [ -n "$out" ]; then
-    while IFS= read -r line; do
-      printf '%s\n' "$line"
-      log_line 'BREW' "$line"
-    done <<<"$out"
+  brew "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line"
+    log_line 'BREW' "$line"
+  done
+  return 0
+}
+
+# Dossiers où Homebrew installe ses binaires : /opt/homebrew/bin (Apple Silicon)
+# puis /usr/local/bin (Intel). Surchargeables PAR LES TESTS seulement
+# (CKR_BREW_BIN_DIRS, séparés par « : »), faute de pouvoir créer /opt/homebrew
+# sous Windows.
+brew_bin_dirs() {
+  if [ -n "${CKR_BREW_BIN_DIRS:-}" ]; then
+    printf '%s' "$CKR_BREW_BIN_DIRS"
+  else
+    printf '%s' '/opt/homebrew/bin:/usr/local/bin'
+  fi
+}
+
+# ÉQUIVALENT macOS de la relecture du registre côté Windows : après une
+# installation Homebrew — et dès le démarrage — le binaire peut exister sans être
+# dans le PATH de la session (cas classique du double-clic Finder, qui n'hérite
+# pas du PATH d'un Terminal configuré). On AJOUTE ces dossiers SANS PERDRE
+# l'existant (ils passent en tête, comme les entrées Machine/User côté Windows),
+# puis l'appelant revérifie la présence des outils.
+refresh_path() {
+  local list dir rest new
+  list="$(brew_bin_dirs)"
+  new=''
+  rest="$list"
+  while [ -n "$rest" ]; do
+    dir="${rest%%:*}"
+    case "$rest" in
+      *:*) rest="${rest#*:}" ;;
+      *) rest='' ;;
+    esac
+    [ -n "$dir" ] || continue
+    [ -d "$dir" ] || continue
+    case ":$PATH:" in
+      *":$dir:"*) ;;
+      *) new="$new${new:+:}$dir" ;;
+    esac
+  done
+  if [ -n "$new" ]; then
+    PATH="$new:$PATH"
+    export PATH
+    log_line 'PATH' "PATH de la session complété (Homebrew) : $new"
   fi
   return 0
 }
@@ -307,8 +350,16 @@ STATE_CORRUPTED=0
 
 # Un état ABSENT, ILLISIBLE ou CORROMPU vaut « premier lancement » : un fichier
 # tronqué ne doit JAMAIS faire planter le démarrage, et ne doit jamais non plus
-# passer pour un état valide. On ne fait pas de « vrai » parsing JSON : on exige
-# la preuve attendue (un `"installedAt"` non vide).
+# passer pour un état valide. La lecture est un VRAI parsing JSON confié à Node
+# (déjà requis par l'application) : une simple recherche textuelle de
+# « installedAt » se contenterait d'un fichier TRONQUÉ
+# (`{"installedAt":"2026-...","node":`) et ferait passer un état inexploitable
+# pour valide. Le repli SANS Node est volontairement prudent : il exige la clé et
+# une valeur entre guillemets non vides (une valeur contenant un espace ou une
+# accolade reste correctement reconnue, puisqu'on ne cherche pas la fin du JSON),
+# mais il ne peut pas détecter une troncature ; sans Node, l'application ne peut
+# de toute façon pas démarrer, et un horodatage douteux fait rejouer une phase
+# d'installation IDEMPOTENTE (jamais destructive).
 read_install_state() {
   STATE_PRESENT=0
   STATE_CORRUPTED=0
@@ -316,6 +367,15 @@ read_install_state() {
   [ -f "$f" ] || return 0
   if [ ! -s "$f" ]; then
     STATE_CORRUPTED=1
+    return 0
+  fi
+  if command_available node; then
+    # `process.argv[1]` = le chemin du fichier (arguments après le script).
+    if node -e 'const fs=require("fs");try{const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.exit(d&&typeof d.installedAt==="string"&&d.installedAt.trim()!==""?0:1);}catch{process.exit(1);}' "$f" >/dev/null 2>&1; then
+      STATE_PRESENT=1
+    else
+      STATE_CORRUPTED=1
+    fi
     return 0
   fi
   if grep -Eq '"installedAt"[[:space:]]*:[[:space:]]*"[^"]+"' "$f" 2>/dev/null; then
@@ -768,12 +828,23 @@ do_check() {
 
 SERVER_PID=''
 SERVER_PGID=''
+SERVER_PORT=''
+SERVER_STOPPED=0
 
-# Vrai si le serveur tourne encore. `tee` (dernier maillon du tube) s'arrête dès
-# que npm ferme le tube : sa survie est un bon indicateur, portable partout.
+# Vrai si le serveur tourne encore. On juge sur le PROCESSUS — le GROUPE de
+# processus (npm → tsx → node), qui porte réellement le serveur — et JAMAIS sur
+# le tuyau `tee`, qui peut survivre à la mort de npm. Repli quand l'identifiant de
+# groupe n'a pas pu être obtenu : la réponse du PORT (un serveur vivant répond).
 server_alive() {
-  [ -n "$SERVER_PID" ] || return 1
-  kill -0 "$SERVER_PID" 2>/dev/null
+  if [ -n "$SERVER_PGID" ]; then
+    kill -s 0 -- "-$SERVER_PGID" 2>/dev/null
+    return $?
+  fi
+  if [ -n "$SERVER_PORT" ] && command_available curl; then
+    curl -fsS --max-time 2 -o /dev/null "http://127.0.0.1:$SERVER_PORT/local/health" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
 }
 
 # Arrête npm ET ses descendants (tsx → node) : tout le groupe de processus créé
@@ -792,15 +863,22 @@ stop_server() {
   fi
 }
 
-# Arrêt propre : ne s'exécute qu'une fois (le trap est retiré en premier), et
-# n'annonce quelque chose que s'il restait effectivement un serveur à arrêter.
+# Nettoyage final : branché sur le trap EXIT, il s'exécute aussi bien à la fin
+# normale qu'après un signal (le handler INT/TERM se contente de sortir). Il est
+# IDEMPOTENT (le trap EXIT peut suivre le handler de signal) et n'annonce quelque
+# chose que s'il restait effectivement un serveur à arrêter.
 cleanup_server() {
-  trap - INT TERM EXIT
+  if [ "$SERVER_STOPPED" = 1 ]; then return 0; fi
+  SERVER_STOPPED=1
   if server_alive; then
+    log_line 'EXIT' 'Trap EXIT exécuté : un serveur tournait encore, arrêt du groupe de processus.'
     say 'INFO' 'Arrêt du serveur…'
     stop_server
     say 'OK' 'Serveur arrêté proprement.'
+  else
+    log_line 'EXIT' 'Trap EXIT exécuté : aucun serveur à arrêter.'
   fi
+  return 0
 }
 
 # Démarre le serveur : sortie dupliquée dans le journal ET visible (tee), dans un
@@ -809,6 +887,7 @@ start_server() {
   local port="$1"
   SERVER_PID=''
   SERVER_PGID=''
+  SERVER_PORT="$port"
   set -m
   PORT="$port" npm start 2>&1 | tee "$SERVER_LOG" &
   SERVER_PID=$!
@@ -850,10 +929,14 @@ do_start() {
     fi
 
     brew_run install node
+    # Après une installation Homebrew, le binaire est présent mais reste souvent
+    # hors du PATH de CETTE session : on complète le PATH puis on revérifie
+    # (équivalent macOS de la relecture du registre côté Windows).
+    refresh_path
     node_info
     if [ "$NODE_OK" != 1 ]; then
       say 'MANQUANT' "Node.js n'est toujours pas utilisable dans cette fenêtre."
-      say 'MANQUANT' "Installez Node.js LTS depuis la page qui s'ouvre, puis relancez Démarrer.command."
+      say 'MANQUANT' "Fermez cette fenêtre, puis relancez Démarrer.command : le nouveau PATH sera pris en compte."
       open_url 'https://nodejs.org/fr/download'
       pause_for_reading
       return 1
@@ -878,6 +961,9 @@ do_start() {
       # Même règle de consentement que pour Node.js (refus par défaut).
       if read_consent "Installer $missing maintenant avec Homebrew ? (o/N) "; then
         brew_run install ffmpeg
+        # Le binaire vient d'être installé : on complète le PATH de la session
+        # AVANT de revérifier, sinon il resterait « introuvable ».
+        refresh_path
         if command_available ffmpeg; then have_ffmpeg=1; fi
         if command_available ffprobe; then have_ffprobe=1; fi
         if [ "$have_ffmpeg" = 1 ] && [ "$have_ffprobe" = 1 ]; then installed=1; fi
@@ -1038,7 +1124,11 @@ do_start() {
 # Point d'entrée
 # ---------------------------------------------------------------------------
 
-trap cleanup_server INT TERM EXIT
+# Le nettoyage est UN SEUL chemin : le trap EXIT. Un signal se contente de
+# sortir, et c'est l'EXIT qui arrête le serveur — quelle que soit la façon dont le
+# script se termine (fin normale, erreur, Ctrl+C, TERM).
+trap 'exit 130' INT TERM
+trap cleanup_server EXIT
 
 printf '\n'
 printf '%s\n' 'yt-chapters - démarrage en un clic (macOS)'
@@ -1050,6 +1140,13 @@ log_line 'TITRE' "Démarrage du lanceur (check=$OPT_CHECK, no-browser=$OPT_NO_BR
 if ! is_macos; then
   say 'INFO' "Note : ce lanceur est prévu pour macOS ; plateforme détectée : « $(uname -s) »."
 fi
+
+# PRÉCAUTION macOS, AVANT le préflight : un Node/ffmpeg/brew installé par
+# Homebrew peut être absent du PATH de la session (cas classique du double-clic
+# depuis le Finder, qui n'hérite pas du PATH d'un Terminal configuré). On le
+# complète d'abord, pour trouver les outils déjà installés au lieu de proposer une
+# installation inutile.
+refresh_path
 
 CODE=0
 if [ "$OPT_CHECK" = 1 ]; then
