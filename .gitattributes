@@ -1,0 +1,8 @@
+# Normalisation des fins de ligne : le dépôt stocke des LF, les fichiers
+# Windows critiques sont restitués en CRLF à la récupération.
+#   - un fichier .cmd (batch) avec des LF SE COMPORTE MAL sous cmd.exe ;
+#   - les scripts PowerShell sont natifs en CRLF sous Windows.
+* text=auto
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
