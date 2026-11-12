@@ -17,11 +17,16 @@ import {
 import {
   fmtLineTs,
   groupWordsIntoSentences,
+  HARD_MAX_LINE_CHARS,
   normalizeToken,
   snapToWordStart,
 } from '../src/words.ts';
-import { persistLocalChapters } from '../src/local-chapters.ts';
+import { persistLocalChapters, generateLocalChapters, type LocalChaptersOptions } from '../src/local-chapters.ts';
 import { sqlite } from '../src/db/index.ts';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const bytes = new Uint8Array([1, 2, 3, 4]);
 const jsonResponse = (body: unknown, status = 200): Response =>
@@ -95,10 +100,15 @@ test('groupWordsIntoSentences coupe sur une pause > 0,6 s, pas en dessous', () =
   assert.equal(lines[1].text, 'trois');
 });
 
-test('groupWordsIntoSentences recoupe un long monologue sans ponctuation', () => {
-  const words = wordsAt(0, Array.from({ length: 300 }, () => 'mot'), 0.1);
+test('groupWordsIntoSentences recoupe un long monologue sans ponctuation (plafond dur)', () => {
+  // Sonde du review : 400 mots, aucune pause, aucune ponctuation.
+  const words = wordsAt(0, Array.from({ length: 400 }, () => 'mot'), 0.1);
   const lines = groupWordsIntoSentences(words);
   assert.ok(lines.length >= 2, `attendu plusieurs lignes, reçu ${lines.length}`);
+  // Le plafond dur borne chaque ligne (la branche « ligne trop longue » morte a
+  // été supprimée ; c'est ce plafond qui empêche une ligne géante).
+  const longest = Math.max(...lines.map((l) => l.text.length));
+  assert.ok(longest <= HARD_MAX_LINE_CHARS, `ligne de ${longest} caractères > ${HARD_MAX_LINE_CHARS}`);
   // Aucun mot perdu : le texte total est préservé.
   const total = lines.map((l) => l.text).join(' ').replace(/\s+/g, ' ').trim();
   assert.equal(total, words.map((w) => w.word).join(' '));
@@ -129,6 +139,67 @@ test('fmtLineTs formate en m:ss.s', () => {
   assert.equal(fmtLineTs(0), '0:00.0');
   assert.equal(fmtLineTs(65.24), '1:05.2');
   assert.equal(fmtLineTs(3599.9), '59:59.9');
+});
+
+// ---------- 2bis. garde « tous les chunks ont des mots » ----------
+
+test('generateLocalChapters : un chunk sans mots -> repli segments (ni crash ni résultat vide)', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ckr-ts-guard-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const src = join(dir, 'src.mp3');
+  execFileSync('ffmpeg', [
+    '-hide_banner',
+    '-nostdin',
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:duration=15',
+    '-ac',
+    '1',
+    '-ar',
+    '16000',
+    src,
+  ]);
+
+  let calls = 0;
+  const transcribe: NonNullable<LocalChaptersOptions['transcribe']> = async (_file, o) => {
+    calls++;
+    // 1er chunk : mots ; 2e : AUCUN mot ; suivants : mots.
+    const withWords = calls !== 2;
+    return {
+      segments: [{ startSec: 0, endSec: o.chunkDurationSec, text: `segment ${calls}` }],
+      words: withWords ? [{ word: `mot${calls}`, startSec: 0, endSec: 0.2 }] : [],
+      fallback: false,
+    };
+  };
+  let prompt = '';
+  const complete: NonNullable<LocalChaptersOptions['complete']> = async (req) => {
+    const user = req.messages.find((m) => m.role === 'user');
+    prompt = String(user?.content ?? '');
+    return {
+      choices: [
+        {
+          message: {
+            content: '{"chapters":[{"startSec":0,"title":"Intro","openingWords":"intro du sujet"}]}',
+          },
+        },
+      ],
+    };
+  };
+
+  const result = await generateLocalChapters(src, { chunkSec: 3, transcribe, complete });
+
+  assert.ok(calls >= 2, `au moins deux chunks attendus, reçu ${calls}`);
+  // Garde documenté : un seul chunk sans mots abandonne la précision par mot.
+  assert.deepEqual(result.words, []);
+  // Ni crash ni résultat vide : segments et chapitres sont bien produits.
+  assert.ok(result.segments.length >= 2);
+  assert.equal(result.chapters.length, 1);
+  assert.match(result.text, /Intro/);
+  // Repli transcript : anciens blocs `[m:ss]` (sans dixième), pas `[m:ss.s]`.
+  assert.match(prompt, /\[0:00\] /);
+  assert.ok(!/\[\d+:\d{2}\.\d\]/.test(prompt), 'pas d’horodatage à la dixième quand les mots manquent');
 });
 
 // ---------- 3. alignement sur les mots ----------

@@ -66,9 +66,11 @@ function textOf(words: Word[]): string {
  * Regroupe des mots horodatés en lignes :
  * - coupure sur ponctuation de fin de phrase ;
  * - coupure sur pause > `pauseSec` (défaut 0,6 s) ;
- * - recoupe une ligne trop longue à la prochaine pause ; si un monologue
- *   n'offre AUCUNE pause, un plafond dur (`HARD_MAX_LINE_CHARS`) évite une
- *   ligne géante (le modèle doit pouvoir se repérer).
+ * - filet de sécurité pour un monologue SANS aucune pause : un plafond dur
+ *   (`HARD_MAX_LINE_CHARS`) évite une ligne géante où le modèle ne peut plus se
+ *   repérer. (La coupure « ligne trop longue à la prochaine pause » a été
+ *   supprimée : elle était subsumée par la règle de pause et `MAX_LINE_CHARS`
+ *   n'agissait jamais.)
  * Le texte total est préservé : chaque mot appartient à exactement une ligne.
  */
 export function groupWordsIntoSentences(
@@ -102,9 +104,8 @@ export function groupWordsIntoSentences(
     }
     const gap = next.startSec - words[i].endSec;
     const chars = cur.reduce((acc, w) => acc + w.word.length + 1, 0);
-    const longLine = chars >= maxChars && gap > pause; // recoupe à la prochaine pause
     const overHardMax = chars >= hardMax; // monologue sans pause : coupe dure
-    if (endsSentence(words[i].word) || gap > pause || longLine || overHardMax) flush(i + 1);
+    if (endsSentence(words[i].word) || gap > pause || overHardMax) flush(i + 1);
   }
   return out;
 }

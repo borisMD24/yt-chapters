@@ -118,6 +118,104 @@ test('transcribeChunk réessaie sur 429 puis réussit (backoff)', async () => {
   assert.equal(res.segments[0].text, 'ok');
 });
 
+// ---------- échelle de repli : seuls les refus de FORMAT font avancer ----------
+
+/** Rung réellement envoyé (format + granularités) : verrouille la séquence. */
+function sentRung(init: RequestInit | undefined): { format: string; gran?: string[] } {
+  const body = JSON.parse(String(init?.body));
+  return { format: body.response_format, gran: body.timestamp_granularities };
+}
+
+const RUNG_1 = { format: 'verbose_json', gran: ['word', 'segment'] };
+const RUNG_2 = { format: 'verbose_json', gran: ['word'] };
+const RUNG_3 = { format: 'verbose_json', gran: undefined };
+const RUNG_4 = { format: 'json', gran: undefined };
+
+// Statuts qui ne signifient PAS « ce provider refuse ces paramètres » : ils
+// doivent remonter APRÈS UN SEUL appel (aucun autre format ne les corrigera).
+for (const status of [401, 402, 403, 408, 413]) {
+  test(`échelle : ${status} -> un seul appel puis erreur (pas de repli)`, async () => {
+    const rungs: { format: string; gran?: string[] }[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      rungs.push(sentRung(init));
+      return new Response('refus', { status });
+    };
+    await assert.rejects(
+      () => transcribeChunk({ bytes, fetchImpl, apiKey: 'k', chunkDurationSec: 1, maxRetries: 0 }),
+      new RegExp(`OpenRouter STT ${status}`),
+    );
+    assert.equal(rungs.length, 1);
+    assert.deepEqual(rungs, [RUNG_1]);
+  });
+}
+
+test('échelle : 429 -> réessai borné par maxRetries puis erreur (2 appels), sans changer de cran', async () => {
+  const rungs: { format: string; gran?: string[] }[] = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    rungs.push(sentRung(init));
+    return new Response('rate limited', { status: 429 });
+  };
+  await assert.rejects(
+    () =>
+      transcribeChunk({
+        bytes,
+        fetchImpl,
+        apiKey: 'k',
+        chunkDurationSec: 1,
+        maxRetries: 1,
+        sleep: async () => {},
+      }),
+    /OpenRouter STT 429/,
+  );
+  assert.equal(rungs.length, 2);
+  assert.deepEqual(rungs, [RUNG_1, RUNG_1]);
+});
+
+test('échelle : 500 -> un seul appel (maxRetries=0) puis erreur', async () => {
+  const rungs: { format: string; gran?: string[] }[] = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    rungs.push(sentRung(init));
+    return new Response('boom', { status: 500 });
+  };
+  await assert.rejects(
+    () => transcribeChunk({ bytes, fetchImpl, apiKey: 'k', chunkDurationSec: 1, maxRetries: 0 }),
+    /OpenRouter STT 500/,
+  );
+  assert.equal(rungs.length, 1);
+  assert.deepEqual(rungs, [RUNG_1]);
+});
+
+test('échelle : erreur réseau -> un seul appel, propagée telle quelle', async () => {
+  let calls = 0;
+  const networkError = new TypeError('fetch failed');
+  const fetchImpl = (async () => {
+    calls++;
+    throw networkError;
+  }) as typeof fetch;
+  await assert.rejects(
+    () => transcribeChunk({ bytes, fetchImpl, apiKey: 'k', chunkDurationSec: 1 }),
+    (err: unknown) => err === networkError,
+  );
+  assert.equal(calls, 1);
+});
+
+// Liste blanche : un refus de FORMAT fait avancer l'échelle jusqu'au `json`.
+for (const status of [400, 404, 415, 422]) {
+  test(`échelle : ${status} -> avance jusqu’au json (4 crans) et rend un résultat`, async () => {
+    const rungs: { format: string; gran?: string[] }[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const rung = sentRung(init);
+      rungs.push(rung);
+      if (rung.format === 'json') return jsonResponse({ text: 'texte de repli' });
+      return new Response('paramètres refusés', { status });
+    };
+    const res = await transcribeChunk({ bytes, fetchImpl, apiKey: 'k', chunkDurationSec: 5, maxRetries: 0 });
+    assert.deepEqual(rungs, [RUNG_1, RUNG_2, RUNG_3, RUNG_4]);
+    assert.equal(res.fallback, true);
+    assert.deepEqual(res.segments, [{ startSec: 0, endSec: 5, text: 'texte de repli' }]);
+  });
+}
+
 test('stitchSegments recale les segments sur les offsets absolus et trie', () => {
   const segs = stitchSegments([
     { startSec: 0, segments: [{ startSec: 1, endSec: 2, text: 'a' }] },

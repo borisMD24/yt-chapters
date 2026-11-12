@@ -7,7 +7,15 @@ import { basename, resolve } from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { chunkToMp3 } from './audio';
 import { transcribeFile, stitchSegments, stitchWords, type ChunkTranscript, type Word } from './transcribe';
-import { buildWarnings, chaptersToText, normalize, proposeChapters, type Proposed, MIN_GAP } from './chapters';
+import {
+  buildWarnings,
+  chaptersToText,
+  normalize,
+  proposeChapters,
+  type ChaptersCompleter,
+  type Proposed,
+  MIN_GAP,
+} from './chapters';
 import type { Segment } from './youtube';
 import { db } from './db';
 import { chapters as chaptersTable, videos } from './db/schema';
@@ -37,6 +45,13 @@ export type LocalChaptersOptions = {
   onProgress?: (e: { phase: 'chunking' | 'transcribing' | 'chaptering'; doneChunks: number; totalChunks: number }) => void;
   /** Annulation coopérative : vérifiée entre les morceaux. */
   signal?: AbortSignal;
+  /**
+   * Couture de test (défaut : vrai client STT `transcribeFile`) : permet de
+   * piloter le pipeline sans réseau ni coût.
+   */
+  transcribe?: typeof transcribeFile;
+  /** Couture de test (défaut : appel LLM OpenRouter via `proposeChapters`). */
+  complete?: ChaptersCompleter;
 };
 
 export type LocalChaptersResult = {
@@ -113,6 +128,7 @@ export async function generateLocalChapters(
   const abs = resolve(input);
   const videoId = opts.videoId && opts.videoId.trim() ? opts.videoId : localVideoId(abs);
   const report = opts.onProgress ?? (() => {});
+  const transcribe = opts.transcribe ?? transcribeFile;
 
   if (opts.signal?.aborted) throw abortError();
   report({ phase: 'chunking', doneChunks: 0, totalChunks: 0 });
@@ -132,7 +148,7 @@ export async function generateLocalChapters(
       // qu'après le premier morceau réussi). `doneChunks` reste le nombre de
       // morceaux DÉJÀ terminés, donc la progression ne recule jamais.
       report({ phase: 'transcribing', doneChunks: transcripts.length, totalChunks: chunks.length });
-      const res = await transcribeFile(c.path, {
+      const res = await transcribe(c.path, {
         chunkDurationSec: c.durationSec,
         language: opts.lang,
         format: 'mp3',
@@ -151,7 +167,7 @@ export async function generateLocalChapters(
     const title = basename(abs);
     // Densité contrôlée ici (et seulement ici) : le modèle ne respecte pas la
     // consigne « un chapitre toutes les 3 à 8 minutes ».
-    const proposed = await proposeChapters({ title, durationSec, words }, segments);
+    const proposed = await proposeChapters({ title, durationSec, words }, segments, { complete: opts.complete });
     const chapters = applyChapterSpacing(proposed, resolveChapterMinGapSec(opts.minGapSec));
 
     return {

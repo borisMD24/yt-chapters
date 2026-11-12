@@ -61,6 +61,14 @@ const LADDER: readonly Rung[] = [
   { responseFormat: 'json' },
 ];
 
+/**
+ * Statuts qui signifient « ce provider n'accepte pas ces paramètres » : SEULS
+ * ceux-là font avancer l'échelle de repli. Tout le reste (auth, crédit, timeout,
+ * charge, 429/5xx déjà épuisés) doit remonter sans autre appel : changer de
+ * format ne corrigerait rien et ne ferait que multiplier les aller-retours STT.
+ */
+const FORMAT_REFUSAL_STATUSES = new Set([400, 404, 415, 422]);
+
 /** Mots horodatés (offsets relatifs au chunk ; l'offset de chunk est ajouté au recollage). */
 function parseWords(raw?: RawWord[]): Word[] {
   return (raw ?? [])
@@ -152,10 +160,11 @@ export async function transcribeChunk(o: TranscribeOpts): Promise<TranscribeResu
     throw new Error('unreachable');
   };
 
-  // Échelle de repli : on ne descend d'un cran que si le provider ROUTÉ refuse le
-  // cran courant (4xx). Une erreur d'auth/quota (401/402/403) ou un échec
-  // serveur/429 déjà épuisé n'ont rien à gagner d'un autre format : on remonte
-  // l'erreur immédiatement (aucun appel gaspillé).
+  // Échelle de repli : on ne descend d'un cran QUE si le provider refuse
+  // explicitement les paramètres (liste blanche : 400/404/415/422). Tout autre
+  // statut — auth/crédit (401/402/403), timeout (408), charge (413), 429/5xx
+  // déjà épuisés par `postWithRetry` — remonte immédiatement, sans autre appel.
+  // Une erreur réseau lève dans `postWithRetry` et se propage telle quelle.
   let lastError = '';
   for (const rung of LADDER) {
     const res = await postWithRetry(rung);
@@ -172,12 +181,8 @@ export async function transcribeChunk(o: TranscribeOpts): Promise<TranscribeResu
       const { segments, words } = parseVerbose((await res.json()) as VerboseJson, o.chunkDurationSec);
       return { segments, words, fallback: false };
     }
-    if (res.status === 429 || res.status >= 500) {
-      throw new Error(`OpenRouter STT ${res.status}: ${await safeText(res)}`);
-    }
     lastError = `${res.status}: ${await safeText(res)}`;
-    // 401/402/403 : changer de format n'aidera pas (clé, quota, droits).
-    if (res.status === 401 || res.status === 402 || res.status === 403) {
+    if (!FORMAT_REFUSAL_STATUSES.has(res.status)) {
       throw new Error(`OpenRouter STT ${lastError}`);
     }
   }
