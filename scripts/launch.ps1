@@ -10,15 +10,28 @@
 # `logs/serveur-*.log`, écrit ses propres étapes dans `logs/demarrage-*.log`,
 # attend que le serveur réponde puis ouvre le navigateur.
 #
+# PREMIER LANCEMENT : quand l'horodatage d'installation (`data/install.json`,
+# ignoré par git) est absent — ou qu'une pièce manque (dépendances, `.env`,
+# base) — une PHASE D'INSTALLATION complète est jouée, étape par étape. Les
+# lancements suivants prennent le CHEMIN RAPIDE (vérification brève, sans rien
+# réinstaller). Un état illisible ou corrompu retombe sur « premier lancement ».
+#
 # Options :
-#   -Check        préflight SEUL : rapporte l'état et sort sans rien installer,
-#                 sans démarrer le serveur, et sans écrire ailleurs que dans logs/.
-#   -NoBrowser    n'ouvre pas le navigateur.
-#   -Port <n>     force le port indiqué (3000 par défaut, sinon le premier libre).
+#   -Check         préflight SEUL : rapporte l'état (dont « premier lancement » ou
+#                  « déjà installé ») et sort sans rien installer, sans démarrer le
+#                  serveur, et sans écrire ailleurs que dans logs/. AUCUN effet de bord.
+#   -NoBrowser     n'ouvre pas le navigateur.
+#   -Port <n>      force le port indiqué (3000 par défaut, sinon le premier libre).
+#   -ForceInstall  rejoue la phase d'installation même si l'horodatage existe
+#                  (support et tests).
+#   -InstallOnly  joue la phase d'installation puis s'arrête SANS démarrer le
+#                  serveur (support et tests hors ligne).
 param(
   [switch]$Check,
   [switch]$NoBrowser,
-  [int]$Port = 0
+  [int]$Port = 0,
+  [switch]$ForceInstall,
+  [switch]$InstallOnly
 )
 
 $ErrorActionPreference = 'Continue'
@@ -34,10 +47,19 @@ $script:Root = Split-Path -Parent $PSScriptRoot
 $script:LogDir = Join-Path $script:Root 'logs'
 $script:Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:LauncherLog = Join-Path $script:LogDir ("demarrage-$($script:Stamp).log")
+# Horodatage d'installation : sa présence (avec les pièces en place) fait passer
+# les lancements suivants par le chemin rapide.
+$script:InstallStatePath = Join-Path $script:Root 'data\install.json'
+$script:InstallReport = New-Object System.Collections.Generic.List[object]
+$script:InstallPhaseRan = $false
 
 # Consentement d'installation : la règle (« refus par défaut, seule une réponse
 # affirmative installe ») vit dans `scripts/consent.ps1`, testable isolément.
 . (Join-Path $PSScriptRoot 'consent.ps1')
+
+# Détection du premier lancement, pièces attendues, test de fumée multimédia et
+# garde du raccourci : `scripts/install.ps1` (testable isolément, lui aussi).
+. (Join-Path $PSScriptRoot 'install.ps1')
 
 # Le dossier des journaux est créé à la demande ; un échec n'arrête jamais le
 # démarrage (on continue simplement sans trace fichier).
@@ -169,6 +191,286 @@ function Show-StartupLogPath {
 }
 
 # ---------------------------------------------------------------------------
+# Premier lancement / chemin rapide
+# ---------------------------------------------------------------------------
+
+# Décide du mode : la phase d'installation est jouée si l'horodatage manque, si
+# une pièce manque, ou si `-ForceInstall` est demandé. Un état corrompu vaut
+# « premier lancement » (voir Read-InstallState).
+function Get-LaunchMode {
+  param([string]$Root, [string]$StatePath, [bool]$ForceInstall)
+  $state = Read-InstallState -Path $StatePath
+  $pieces = Test-InstallPieces -Root $Root
+  $firstLaunch = (-not $state.present) -or (-not $pieces.all)
+  return @{
+    firstLaunch = $firstLaunch
+    state = $state
+    pieces = $pieces
+    installPhase = ($ForceInstall -or $firstLaunch)
+  }
+}
+
+# Clé OpenRouter configurée ? La source de vérité est le SERVEUR (il résout la
+# clé en base PUIS dans `.env`) ; hors serveur (mode -InstallOnly), on lit `.env`
+# avec les mêmes règles d'exemple que le résolveur TypeScript.
+function Get-KeyConfigured {
+  param([int]$ServerPort = 0)
+  if ($ServerPort -gt 0) {
+    try {
+      $health = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/local/health" -f $ServerPort) -TimeoutSec 3 -ErrorAction Stop
+      if ($health -and $health.openrouterKey) { return [bool]$health.openrouterKey.ok }
+    } catch { }
+  }
+  return Test-KeyConfiguredFromEnv -EnvFile (Join-Path $script:Root '.env')
+}
+
+function Test-KeyConfiguredFromEnv {
+  param([string]$EnvFile)
+  if (-not $EnvFile -or -not (Test-Path -LiteralPath $EnvFile)) { return $false }
+  $lines = @()
+  try { $lines = @(Get-Content -LiteralPath $EnvFile -ErrorAction Stop) } catch { return $false }
+  foreach ($line in $lines) {
+    if ($line -match '^\s*OPENROUTER_API_KEY\s*=\s*(.*)$') {
+      $value = $Matches[1].Trim().Trim('"').Trim("'")
+      if (-not $value) { return $false }
+      if ($value.Length -lt 20) { return $false }
+      if ($value.Contains('...') -or $value.Contains([char]0x2026)) { return $false }
+      if ($value -match '(?i)(votre|your|change|remplace|replace|exemple|example|placeholder|todo|xxx)') { return $false }
+      return $true
+    }
+  }
+  return $false
+}
+
+function Add-InstallReport {
+  param([string]$Label, [string]$Status)
+  $null = $script:InstallReport.Add(@{ label = $Label; status = $Status })
+}
+
+function Show-InstallSummary {
+  param([bool]$KeyConfigured, [int]$ServerPort, [bool]$ServerReady = $true)
+  Say-Title 'Résumé de l installation'
+  Say 'Ce qui a été préparé (installé ou déjà présent) :' 'INFO'
+  foreach ($item in $script:InstallReport) { Say ("  - {0} : {1}" -f $item.label, $item.status) 'INFO' }
+  if ($KeyConfigured) {
+    if ($ServerReady) {
+      Say ("Étape suivante : ouvrez http://127.0.0.1:{0}/ et lancez un chapitrage." -f $ServerPort) 'OK'
+    } else {
+      Say 'Étape suivante : corrigez la cause ci-dessus, puis relancez Demarrer.cmd.' 'OK'
+    }
+  } else {
+    if ($ServerReady) {
+      Say ("Étape suivante : aucune clé OpenRouter n est configurée. Ouvrez http://127.0.0.1:{0}/admin, collez votre clé, puis cliquez Enregistrer et Tester." -f $ServerPort) 'MANQUANT'
+    } else {
+      Say 'Étape suivante : aucune clé OpenRouter n est configurée. Une fois le serveur démarré, ouvrez /admin pour la renseigner.' 'MANQUANT'
+    }
+  }
+}
+
+# Création du raccourci du Bureau : réservée à une réponse affirmative explicite
+# (`Read-ShortcutConsent`), et JAMAIS atteinte en mode `-Check` (Invoke-Check ne
+# l appelle pas). Rien ne s écrit hors du projet sans un « oui » clair.
+function New-DesktopShortcut {
+  $desktop = [Environment]::GetFolderPath('Desktop')
+  $target = Join-Path $script:Root 'Demarrer.cmd'
+  if (-not $desktop -or -not (Test-Path -LiteralPath $desktop) -or -not (Test-Path -LiteralPath $target)) { return $null }
+  $linkPath = Join-Path $desktop 'yt-chapters.lnk'
+  try {
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($linkPath)
+    $link.TargetPath = $target
+    $link.WorkingDirectory = $script:Root
+    $link.Description = 'Demarrer yt-chapters'
+    $link.Save()
+    return $linkPath
+  } catch { return $null }
+}
+
+# ---------------------------------------------------------------------------
+# Phase d'installation complète (premier lancement, ou -ForceInstall)
+# ---------------------------------------------------------------------------
+
+# Chaque étape est IDEMPOTENTE : si elle est déjà faite, elle est signalée puis
+# SAUTÉE. Renvoie 0 en cas de succès, un code non nul si le démarrage doit
+# s'arrêter (test de fumée en échec, base impossible à créer…).
+function Invoke-InstallPhase {
+  param([string]$Trigger)
+
+  if ($Trigger -eq 'force') {
+    Say 'Phase d installation demandée (-ForceInstall) : les étapes déjà faites sont signalées puis sautées.' 'INFO'
+  } else {
+    Say 'Premier lancement : installation complète, étape par étape.' 'INFO'
+  }
+
+  # ---------- a. dossiers d'exécution ----------
+  Say-Title 'Installation : dossiers d exécution'
+  foreach ($dir in @((Join-Path $script:Root 'data'), $script:LogDir)) {
+    $existed = Test-Path -LiteralPath $dir
+    try { $null = New-Item -ItemType Directory -Force -Path $dir -ErrorAction Stop } catch {
+      Say ("Dossier inutilisable : {0}" -f $dir) 'ERREUR'
+      return 1
+    }
+    if ($existed) { Say ("Dossier déjà présent : {0}" -f $dir) 'OK' }
+    else { Say ("Dossier créé : {0}" -f $dir) 'OK' }
+  }
+  Add-InstallReport 'Dossiers' 'data\ et logs\ disponibles'
+
+  # ---------- b. dépendances ----------
+  Say-Title 'Installation : dépendances'
+  $tsx = (Test-Path -LiteralPath (Join-Path $script:Root 'node_modules\.bin\tsx.cmd')) -or
+         (Test-Path -LiteralPath (Join-Path $script:Root 'node_modules\.bin\tsx'))
+  if ($tsx) {
+    Say 'Dépendances déjà installées (node_modules/.bin/tsx présent) — étape sautée.' 'OK'
+    Add-InstallReport 'Dépendances' 'déjà présentes'
+  } else {
+    Say 'Installation des dépendances…' 'INFO'
+    Push-Location -LiteralPath $script:Root
+    try {
+      # `npm ci` exige un verrou ; s'il est absent, on passe directement à
+      # `npm install`. Un échec de `npm ci` (verrou périmé) retombe aussi dessus.
+      if (Test-Path -LiteralPath (Join-Path $script:Root 'package-lock.json')) {
+        $code = Invoke-Npm -Arguments @('ci') -Label 'npm ci'
+        if ($code -ne 0) {
+          Say 'npm ci a échoué : nouvel essai avec npm install.' 'MANQUANT'
+          $code = Invoke-Npm -Arguments @('install') -Label 'npm install'
+        }
+      } else {
+        Say 'Verrou absent (package-lock.json) : installation avec npm install.' 'INFO'
+        $code = Invoke-Npm -Arguments @('install') -Label 'npm install'
+      }
+    } finally {
+      Pop-Location
+    }
+    if ($code -ne 0) {
+      Say "L'installation des dépendances a échoué. Vérifiez votre connexion Internet, puis relancez ce fichier." 'ERREUR'
+      [void](Read-Host)
+      return 1
+    }
+    Say 'Dépendances installées.' 'OK'
+    Add-InstallReport 'Dépendances' 'installées'
+  }
+
+  # ---------- c. configuration (.env) ----------
+  Say-Title 'Installation : configuration (.env)'
+  $envFile = Join-Path $script:Root '.env'
+  if (Test-Path -LiteralPath $envFile) {
+    Say 'Fichier .env déjà présent — étape sautée.' 'OK'
+    Add-InstallReport '.env' 'déjà présent'
+  } else {
+    $example = Join-Path $script:Root '.env.example'
+    if (Test-Path -LiteralPath $example) {
+      try {
+        Copy-Item -LiteralPath $example -Destination $envFile -ErrorAction Stop
+        Say 'Fichier .env créé depuis .env.example (la clé se renseigne dans /admin).' 'OK'
+        Add-InstallReport '.env' 'créé depuis .env.example'
+      } catch {
+        Say 'Impossible de créer le fichier .env : la suite continue avec les valeurs par défaut.' 'MANQUANT'
+        Add-InstallReport '.env' 'non créé (valeurs par défaut)'
+      }
+    } else {
+      Say 'Fichier .env.example absent : la suite continue avec les valeurs par défaut.' 'MANQUANT'
+      Add-InstallReport '.env' 'non créé (.env.example absent)'
+    }
+  }
+
+  # ---------- d. base de données ----------
+  Say-Title 'Installation : base de données'
+  $dbFile = Join-Path $script:Root 'data\chapters.db'
+  if (Test-Path -LiteralPath $dbFile) {
+    Say 'Base de données déjà présente (data/chapters.db) — étape sautée.' 'OK'
+    Add-InstallReport 'Base de données' 'déjà présente'
+  } else {
+    Say 'Base de données absente : application du schéma (npm run db:push)…' 'INFO'
+    Push-Location -LiteralPath $script:Root
+    try {
+      # Arguments passés SÉPARÉMENT (`run`, `db:push`) : les joindre en une seule
+      # chaîne ferait répondre « Unknown command: "run db:push" » à npm.
+      $dbCode = Invoke-Npm -Arguments @('run', 'db:push') -Label 'npm run db:push'
+    } finally {
+      Pop-Location
+    }
+    if ($dbCode -ne 0) {
+      # Ne JAMAIS démarrer sur une base sans schéma : l'erreur serait ensuite
+      # attribuée à tort au serveur (« il ne repond pas »). On explique et on stop.
+      Say ("La création du schéma a échoué (npm run db:push, code {0}) : le serveur ne sera PAS demarre." -f $dbCode) 'ERREUR'
+      Say 'Dernières lignes de la commande :' 'INFO'
+      foreach ($line in ($script:LastNpmOutput | Select-Object -Last 10)) { Write-Host $line }
+      Say 'Corrigez la cause ci-dessus (droits d ecriture sur data\, connexion Internet), puis relancez Demarrer.cmd.' 'ERREUR'
+      [void](Read-Host)
+      return 1
+    }
+    Say 'Schéma appliqué (data/chapters.db).' 'OK'
+    Add-InstallReport 'Base de données' 'schéma appliqué'
+  }
+
+  # ---------- e. test de fumée multimédia ----------
+  Say-Title 'Installation : test de la chaîne multimédia'
+  $smokeDir = $null
+  try {
+    $smokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ckr-smoke-" + [System.Guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Force -Path $smokeDir -ErrorAction Stop
+  } catch { $smokeDir = $null }
+
+  $smoke = @{ ok = $false; phase = 'preparation'; output = @() }
+  if ($smokeDir) {
+    Say 'Encodage de 1 s de silence en mp3 (ffmpeg), puis relecture (ffprobe)…' 'INFO'
+    $smoke = Invoke-MediaSmokeTest -TempDir $smokeDir
+    try { Remove-Item -LiteralPath $smokeDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+  }
+  if (-not $smoke.ok) {
+    # Tout le chapitrage local dépend de cette capacité : on s'arrête ICI, avant
+    # de démarrer un serveur qui échouerait à chaque découpage.
+    Say 'Votre installation de ffmpeg est incomplète : elle ne sait pas encoder en mp3.' 'ERREUR'
+    Say ("Le test a échoué pendant la phase « {0} » : le chapitrage local en depend." -f $smoke.phase) 'ERREUR'
+    Say 'Réinstallez FFmpeg (winget install --id Gyan.FFmpeg -e) ou téléchargez « ffmpeg-release-full » sur https://www.gyan.dev/ffmpeg/builds/, puis relancez Demarrer.cmd.' 'INFO'
+    foreach ($line in @($smoke.output)) { Write-Log ("smoke: " + [string]$line) 'SMOKE' }
+    Add-InstallReport 'Test multimédia' ("ÉCHEC (" + $smoke.phase + " mp3)")
+    return 1
+  }
+  Say 'Test réussi : ffmpeg a encodé le mp3 et ffprobe l a relu.' 'OK'
+  Add-InstallReport 'Test multimédia' 'réussi (mp3 encodé puis relu)'
+
+  # ---------- f. horodatage d'installation ----------
+  Say-Title 'Installation : horodatage'
+  $nodeInfo = Get-NodeInfo
+  $ffmpegVersion = Get-FfmpegVersion
+  $revision = Get-RepoRevision -Root $script:Root
+  $shortRev = if ($revision) { $revision.Substring(0, [Math]::Min(7, $revision.Length)) } else { 'inconnue' }
+  $state = @{
+    installedAt = (Get-Date).ToUniversalTime().ToString('o')
+    node = $nodeInfo.version
+    ffmpeg = $ffmpegVersion
+    revision = $revision
+  }
+  try {
+    Write-InstallState -Path $script:InstallStatePath -State $state
+    Say ("Horodatage écrit dans {0} (Node {1}, ffmpeg {2}, révision {3})." -f $script:InstallStatePath, $nodeInfo.version, ($(if ($ffmpegVersion) { $ffmpegVersion } else { 'inconnue' })), $shortRev) 'OK'
+    Add-InstallReport 'Horodatage' 'écrit (data\install.json)'
+  } catch {
+    Say 'Impossible d écrire l horodatage : il sera retenté au prochain lancement.' 'MANQUANT'
+    Add-InstallReport 'Horodatage' 'non écrit (nouvel essai au prochain lancement)'
+  }
+
+  # ---------- g. raccourci du Bureau (optionnel) ----------
+  Say-Title 'Installation : raccourci (optionnel)'
+  if (Read-ShortcutConsent -Message 'Creer un raccourci « yt-chapters » sur le Bureau ? (o/N)') {
+    $created = New-DesktopShortcut
+    if ($created) {
+      Say ("Raccourci créé : {0}" -f $created) 'OK'
+      Add-InstallReport 'Raccourci Bureau' 'créé'
+    } else {
+      Say 'Le raccourci n a pas pu être créé (sans conséquence sur le démarrage).' 'MANQUANT'
+      Add-InstallReport 'Raccourci Bureau' 'non créé'
+    }
+  } else {
+    Say 'Raccourci du Bureau ignoré (refus par défaut : rien ne s écrit hors du projet sans un oui clair).' 'OK'
+    Add-InstallReport 'Raccourci Bureau' 'ignoré (refus)'
+  }
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Préflight : lecture seule, aucune installation, aucun démarrage.
 # ---------------------------------------------------------------------------
 function Invoke-Check {
@@ -218,6 +520,18 @@ function Invoke-Check {
     Say 'Aucun port libre entre 3000 et 3010' 'MANQUANT'
   }
 
+  $mode = Get-LaunchMode -Root $script:Root -StatePath $script:InstallStatePath -ForceInstall ([bool]$ForceInstall)
+  if ($mode.state.corrupted) {
+    Say "Fichier d'état d'installation illisible ou corrompu : traité comme un premier lancement." 'MANQUANT'
+  }
+  if ($ForceInstall) {
+    Say 'Premier lancement forcé (-ForceInstall) : la phase d installation serait rejouée.' 'INFO'
+  } elseif ($mode.firstLaunch) {
+    Say 'Premier lancement : la phase d installation sera jouée au démarrage.' 'INFO'
+  } else {
+    Say 'Déjà installé : le démarrage passera par le chemin rapide.' 'OK'
+  }
+
   Show-StartupLogPath
   Say 'Preflight termine : rien n a ete installe ni demarre.' 'OK'
   Write-Host ''
@@ -232,6 +546,8 @@ function Invoke-Start {
   Say ("Dossier du projet : {0}" -f $script:Root)
 
   # ---------- 1. Node.js ----------
+  $nodeWasInstalled = $false
+  $ffmpegWasInstalled = $false
   $node = Get-NodeInfo
   if (-not $node.ok) {
     $reason = if ($node.version) { "Node.js $($node.version) est trop ancien (20 minimum requis)." } else { 'Node.js est introuvable sur cet ordinateur (20 minimum requis).' }
@@ -274,6 +590,7 @@ function Invoke-Start {
       [void](Read-Host)
       return 1
     }
+    $nodeWasInstalled = $true
   }
   Say ("Node.js {0}" -f $node.version) 'OK'
 
@@ -316,78 +633,48 @@ function Invoke-Start {
       return 1
     }
     Say 'ffmpeg et ffprobe sont maintenant disponibles.' 'OK'
+    $ffmpegWasInstalled = $true
   } else {
     Say 'ffmpeg et ffprobe trouves' 'OK'
   }
 
-  # ---------- 3. Dépendances ----------
-  $tsx = (Test-Path -LiteralPath (Join-Path $script:Root 'node_modules\.bin\tsx.cmd')) -or
-         (Test-Path -LiteralPath (Join-Path $script:Root 'node_modules\.bin\tsx'))
-  if (-not $tsx) {
-    Say 'Installation des dependances (npm ci)…' 'INFO'
-    Push-Location -LiteralPath $script:Root
-    try {
-      $code = Invoke-Npm -Arguments @('ci') -Label 'npm ci'
-      if ($code -ne 0) {
-        Say 'npm ci a echoue : nouvel essai avec npm install.' 'MANQUANT'
-        $code = Invoke-Npm -Arguments @('install') -Label 'npm install'
-      }
-    } finally {
-      Pop-Location
-    }
-    if ($code -ne 0) {
-      Say "L'installation des dependances a echoue. Verifiez votre connexion Internet, puis relancez ce fichier." 'ERREUR'
-      [void](Read-Host)
-      return 1
-    }
-    Say 'Dependances installees.' 'OK'
-  } else {
-    Say 'Dependances deja installees' 'OK'
+  # ---------- 3. Premier lancement ou chemin rapide ----------
+  # La phase d'installation est jouée si l'horodatage manque, si une pièce manque
+  # (dépendances, .env, base) ou si `-ForceInstall` est demandé. Sinon, on prend
+  # le chemin rapide : rien n'est réinstallé, l'horodatage n'est pas réécrit.
+  $mode = Get-LaunchMode -Root $script:Root -StatePath $script:InstallStatePath -ForceInstall ([bool]$ForceInstall)
+  if ($mode.state.corrupted) {
+    Say "Fichier d'état d'installation illisible ou corrompu : traité comme un premier lancement." 'MANQUANT'
   }
 
-  # ---------- 4. Configuration (.env) ----------
-  $envFile = Join-Path $script:Root '.env'
-  if (-not (Test-Path -LiteralPath $envFile)) {
-    $example = Join-Path $script:Root '.env.example'
-    if (Test-Path -LiteralPath $example) {
-      try {
-        Copy-Item -LiteralPath $example -Destination $envFile -ErrorAction Stop
-        Say 'Fichier .env cree a partir de .env.example (la cle OpenRouter se renseigne dans la page Administration).' 'OK'
-      } catch {
-        Say "Impossible de creer le fichier .env : la suite continue avec les valeurs par defaut." 'MANQUANT'
-      }
-    } else {
-      Say 'Fichier .env.example absent : la suite continue avec les valeurs par defaut.' 'MANQUANT'
-    }
+  if ($mode.installPhase) {
+    $trigger = if ($ForceInstall) { 'force' } else { 'premier-lancement' }
+    Add-InstallReport 'Node.js' ($(if ($nodeWasInstalled) { "installé (winget), version $($node.version)" } else { "présent, version $($node.version)" }))
+    Add-InstallReport 'ffmpeg/ffprobe' ($(if ($ffmpegWasInstalled) { 'installés (winget)' } else { 'présents' }))
+    $code = Invoke-InstallPhase -Trigger $trigger
+    if ($code -ne 0) { return $code }
+    $script:InstallPhaseRan = $true
   } else {
-    Say 'Fichier .env present' 'OK'
+    Say-Title 'Chemin rapide : déjà installé'
+    $pieces = $mode.pieces
+    Say ("Node.js {0}, ffmpeg/ffprobe presents, dependances {1}, .env {2}, base {3}" -f $node.version, ($(if ($pieces.deps) { 'presentes' } else { 'absentes' })), ($(if ($pieces.env) { 'present' } else { 'absent' })), ($(if ($pieces.db) { 'presente' } else { 'absente' }))) 'OK'
+    Say 'Installation deja faite : aucune etape rejouee, horodatage inchange.' 'OK'
+    Add-InstallReport 'Node.js' ("present, version " + $node.version)
+    Add-InstallReport 'ffmpeg/ffprobe' 'presents'
+    Add-InstallReport 'Dependances' ($(if ($pieces.deps) { 'deja presentes' } else { 'absentes' }))
+    Add-InstallReport '.env' ($(if ($pieces.env) { 'deja present' } else { 'absent' }))
+    Add-InstallReport 'Base de donnees' ($(if ($pieces.db) { 'deja presente' } else { 'absente' }))
+    Add-InstallReport 'Installation' 'deja faite (chemin rapide)'
+    $script:InstallPhaseRan = $false
   }
 
-  # ---------- 5. Base de données ----------
-  $dbFile = Join-Path $script:Root 'data\chapters.db'
-  if (-not (Test-Path -LiteralPath $dbFile)) {
-    Say 'Base de donnees absente : application du schema (npm run db:push)…' 'INFO'
-    Push-Location -LiteralPath $script:Root
-    try {
-      # Arguments passés SÉPARÉMENT (`run`, `db:push`) : les joindre en une seule
-      # chaîne ferait répondre « Unknown command: "run db:push" » à npm.
-      $dbCode = Invoke-Npm -Arguments @('run', 'db:push') -Label 'npm run db:push'
-    } finally {
-      Pop-Location
-    }
-    if ($dbCode -ne 0) {
-      # Ne JAMAIS démarrer sur une base sans schéma : l'erreur serait ensuite
-      # attribuée à tort au serveur (« il ne repond pas »). On explique et on stop.
-      Say ("La creation du schema a echoue (npm run db:push, code {0}) : le serveur ne sera PAS demarre." -f $dbCode) 'ERREUR'
-      Say 'Dernieres lignes de la commande :' 'INFO'
-      foreach ($line in ($script:LastNpmOutput | Select-Object -Last 10)) { Write-Host $line }
-      Say 'Corrigez la cause ci-dessus (droits d ecriture sur data\, connexion Internet), puis relancez Demarrer.cmd.' 'ERREUR'
-      [void](Read-Host)
-      return 1
-    }
-    Say 'Schema applique (data/chapters.db).' 'OK'
-  } else {
-    Say 'Base de donnees presente' 'OK'
+  # ---------- 3bis. Arrêt après installation (-InstallOnly) ----------
+  if ($InstallOnly) {
+    $keyOnly = Get-KeyConfigured -ServerPort 0
+    Say-Title 'Mode installation seule (-InstallOnly) : le serveur n est pas demarre'
+    Show-InstallSummary -KeyConfigured $keyOnly -ServerPort 0
+    Show-StartupLogPath
+    return 0
   }
 
   # ---------- 6. Port ----------
@@ -445,17 +732,24 @@ Set-Location -LiteralPath '$($script:Root)'
         elseif ($tail -match 'SQLITE_BUSY|database is locked') { Say 'Diagnostic : la base de donnees est verrouillee par un autre programme.' 'ERREUR' }
         else { Say 'Diagnostic : consultez le journal ci-dessus (cause exacte en anglais).' 'ERREUR' }
       }
+      if ($script:InstallPhaseRan) { Show-InstallSummary -KeyConfigured (Get-KeyConfigured -ServerPort 0) -ServerPort $port -ServerReady $false }
       [void](Read-Host)
       return 1
     }
 
-    Say ("Serveur pret : {0}" -f $url) 'OK'
+    # Page d'accueil : /admin quand AUCUNE clé n'est configurée (c'est la seule
+    # action utile à ce moment), la page principale sinon. L'état vient du
+    # serveur lui-même (/local/health), donc de la vraie résolution base + .env.
+    $keyConfigured = Get-KeyConfigured -ServerPort $port
+    $openUrl = if ($keyConfigured) { $url } else { "http://127.0.0.1:$port/admin" }
+    Say ("Serveur pret : {0}" -f $openUrl) 'OK'
     if (-not $NoBrowser) {
       Say 'Ouverture du navigateur…' 'INFO'
-      Open-Url $url
+      Open-Url $openUrl
     } else {
-      Say 'Navigateur non ouvert (-NoBrowser) : ouvrez l adresse affichee ci-dessus.' 'INFO'
+      Say ("Navigateur non ouvert (-NoBrowser) : ouvrez {0}" -f $openUrl) 'INFO'
     }
+    if ($script:InstallPhaseRan) { Show-InstallSummary -KeyConfigured $keyConfigured -ServerPort $port }
     Show-StartupLogPath
     Write-Host ''
     Write-Host 'Le serveur tourne dans cette fenetre. Pour l arreter : Ctrl+C, ou fermez cette fenetre.' -ForegroundColor Cyan

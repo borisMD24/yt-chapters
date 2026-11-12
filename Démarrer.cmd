@@ -10,6 +10,8 @@ rem Options possibles (en ligne de commande) :
 rem   Demarrer.cmd -Check        verifie l'environnement sans rien installer
 rem   Demarrer.cmd -NoBrowser    demarre sans ouvrir le navigateur
 rem   Demarrer.cmd -Port 3001    force le port
+rem   Demarrer.cmd -ForceInstall rejoue la phase d'installation complete
+rem   Demarrer.cmd -InstallOnly  installe puis s'arrete sans demarrer le serveur
 
 rem Toutes les commandes suivantes partent du dossier de ce fichier, meme si
 rem le script est lance depuis un autre dossier.

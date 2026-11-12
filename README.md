@@ -36,19 +36,64 @@ s'ouvre, et l'outil fait le reste.
    verrouillée…).
 9. **À la fermeture** (Ctrl+C ou fenêtre fermée), il arrête proprement le serveur.
 
+> Les étapes **3 à 7** ne sont jouées qu'au **premier lancement** (ou avec
+> `-ForceInstall`). Ensuite, le lanceur prend le **chemin rapide** (vérification
+> brève puis démarrage) — voir « Premier lancement : ce qui se passe » ci-dessous.
+
 > Le dossier `logs/` est créé à la demande et **ignoré par git**. Son chemin est
 > affiché au démarrage et dans la page d'administration.
 
 Démarrage en ligne de commande, avec des options :
 
 ```bat
-Démarrer.cmd -Check        :: préflight seul : rapporte l'état et sort sans rien installer ni démarrer
-Démarrer.cmd -NoBrowser    :: démarre sans ouvrir le navigateur
-Démarrer.cmd -Port 3001    :: force le port
+Démarrer.cmd -Check          :: préflight seul : rapporte l'état et sort sans rien installer ni démarrer
+Démarrer.cmd -NoBrowser      :: démarre sans ouvrir le navigateur
+Démarrer.cmd -Port 3001      :: force le port
+Démarrer.cmd -ForceInstall   :: rejoue la phase d'installation même si elle est déjà faite
+Démarrer.cmd -InstallOnly    :: joue l'installation puis s'arrête sans démarrer le serveur (support)
 ```
 
 `-Check` n'écrit que dans `logs/` et ne démarre rien : c'est ce qu'utilisent les
 tests pour vérifier l'environnement.
+
+### Premier lancement : ce qui se passe
+
+Au **premier lancement**, le lanceur joue une **phase d'installation complète**,
+annoncée étape par étape (à l'écran **et** dans `logs/demarrage-<horodatage>.log`).
+Chaque étape est **idempotente** : si elle est déjà faite, elle est signalée puis
+**sautée**.
+
+1. **Node.js** et **ffmpeg/ffprobe** : vérifiés, avec les installations `winget`
+   proposées (voir ci-dessus ; **réponse par défaut = refus**).
+2. **Dossiers d'exécution** : `data/` et `logs/` créés si besoin.
+3. **Dépendances** : `npm ci` (repli `npm install` si le verrou manque ou si
+   `npm ci` échoue) si `node_modules` est absent.
+4. **`.env`** : copié depuis `.env.example` s'il manque.
+5. **Base de données** : `npm run db:push` si `data/chapters.db` est absent.
+6. **Test de fumée multimédia** : environ 1 s de silence est **encodée en mp3**
+   par `ffmpeg` puis **relue** par `ffprobe`. Si l'encodage échoue, le lanceur
+   affiche « *votre installation de ffmpeg est incomplète : elle ne sait pas
+   encoder en mp3* » et **s'arrête sans démarrer le serveur** (tout le chapitrage
+   local en dépend).
+7. **Horodatage d'installation** : `data/install.json` (ignoré par git) est écrit
+   avec la date, les versions de Node et ffmpeg et la révision du dépôt. Sa
+   présence (avec les pièces en place) fait passer les lancements suivants par le
+   **chemin rapide** : vérification brève (versions, base, port) puis démarrage,
+   sans rien réinstaller. Un fichier **illisible ou corrompu** retombe sur
+   « premier lancement » — jamais de plantage.
+8. **Raccourci du Bureau** (optionnel) : le lanceur **demande** s'il doit créer un
+   raccourci `yt-chapters.lnk` vers `Démarrer.cmd`. **Défaut = refus** : rien ne
+   s'écrit hors du projet sans un « oui » clair, et jamais en mode `-Check`.
+9. **Résumé final** : ce qui a été installé ou existait déjà, le dossier des
+   journaux (`logs/`), et **l'étape suivante**. Si aucune clé OpenRouter n'est
+   configurée, le navigateur s'ouvre directement sur **`/admin`** (au lieu de la
+   page principale) et le résumé vous invite à y coller votre clé.
+
+**Relancer l'installation** à tout moment (support, dépannage) :
+
+```bat
+Démarrer.cmd -ForceInstall
+```
 
 ### Dépannage
 
@@ -60,6 +105,8 @@ tests pour vérifier l'environnement.
 | Windows demande l'autorisation du Pare-feu | Acceptez pour « Réseaux privés » : l'outil écoute sur `0.0.0.0` pour être joignable depuis votre réseau local. Sinon autorisez seulement « Réseaux privés », ou faites écouter le serveur sur la boucle locale (voir plus bas). |
 | « Aucune clé OpenRouter n'est configurée » | Ouvrez <http://localhost:3000/admin>, collez la clé, **Enregistrez** puis **Testez la clé**. |
 | Installation des dépendances impossible | Vérifiez la connexion Internet, puis relancez `Démarrer.cmd`. Les journaux détaillés sont dans `logs/`. |
+| Le lanceur s'arrête sur « votre installation de ffmpeg est incomplète » | Votre `ffmpeg` ne sait pas encoder en mp3. Réinstallez-le (`winget install --id Gyan.FFmpeg -e`, ou « ffmpeg-release-full » depuis <https://www.gyan.dev/ffmpeg/builds/>), puis relancez `Démarrer.cmd`. |
+| Rien ne se réinstalle alors que je viens de mettre à jour le code | C'est le chemin rapide (installation déjà faite). Forcez la phase complète : `Démarrer.cmd -ForceInstall`. |
 
 ## Prérequis
 
