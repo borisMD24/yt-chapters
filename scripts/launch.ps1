@@ -35,6 +35,10 @@ $script:LogDir = Join-Path $script:Root 'logs'
 $script:Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:LauncherLog = Join-Path $script:LogDir ("demarrage-$($script:Stamp).log")
 
+# Consentement d'installation : la règle (« refus par défaut, seule une réponse
+# affirmative installe ») vit dans `scripts/consent.ps1`, testable isolément.
+. (Join-Path $PSScriptRoot 'consent.ps1')
+
 # Le dossier des journaux est créé à la demande ; un échec n'arrête jamais le
 # démarrage (on continue simplement sans trace fichier).
 try { $null = New-Item -ItemType Directory -Force -Path $script:LogDir -ErrorAction Stop } catch { }
@@ -242,14 +246,13 @@ function Invoke-Start {
       return 1
     }
 
-    # Consentement : DÉFAUT = REFUSER. Seule une réponse explicitement
-    # affirmative installe ; tout le reste (vide, espaces, « q », « non »,
-    # réponse inattendue) refuse, et un `Read-Host` impossible (pas de console)
-    # refuse aussi — aucune installation ne doit se déclencher sans question
-    # réellement posée.
+    # Consentement : DÉFAUT = REFUSER. La décision est prise par
+    # `Test-InstallConsent` (voir scripts/consent.ps1) : elle convertit la réponse
+    # en chaîne, sinon un `Read-Host` sans entrée (AutomationNull) passerait
+    # pour une valeur fausse et l'installation se ferait sans consentement.
     $answer = 'n'
     try { $answer = Read-Host 'Installer Node.js LTS maintenant avec winget ? (o/N)' } catch { $answer = 'n' }
-    if ($answer -notmatch '^(o|oui|y|yes)$') {
+    if (-not (Test-InstallConsent $answer)) {
       Say 'Installation refusee.' 'ERREUR'
       Say "Telechargez Node.js LTS sur https://nodejs.org/fr/download, installez-le, puis relancez ce fichier." 'ERREUR'
       Open-Url 'https://nodejs.org/fr/download'
@@ -285,12 +288,12 @@ function Invoke-Start {
 
     $installed = $false
     if (Test-CommandAvailable 'winget') {
-      # Même règle de consentement que pour Node.js : DÉFAUT = REFUSER, seule
-      # une réponse explicitement affirmative installe.
+      # Même règle de consentement que pour Node.js (refus par défaut, et
+      # AutomationNull refuse : voir scripts/consent.ps1).
       $answer = 'n'
       try { $answer = Read-Host ("Installer {0} maintenant avec winget ? (o/N)" -f ($missing -join ' et ')) } catch { $answer = 'n' }
-      if ($answer -notmatch '^(o|oui|y|yes)$') {
-        Say ("Installation de {0} refusee : poursuite sans ffmpeg." -f ($missing -join ' et ')) 'MANQUANT'
+      if (-not (Test-InstallConsent $answer)) {
+        Say ("Installation de {0} refusee : l installation manuelle est expliquee ci-dessous." -f ($missing -join ' et ')) 'MANQUANT'
       } else {
         Say-Raw '> winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements'
         & winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements 2>&1 | ForEach-Object {

@@ -133,8 +133,8 @@ Plus besoin de toucher au `.env` : ouvrez la section d'administration.
   elle-même (`GET /admin/credits`) est **réservée à cet ordinateur** : un client
   du réseau local reçoit un `403`. La clé n'est jamais exposée. La page principale
   affiche un avertissement **discret et non bloquant** quand le restant connu
-  passe sous 1 $ — elle n'obtient, elle, **aucun montant** (juste ce
-  avertissement).
+  passe sous 1 $ — cette page n'obtient, elle, **aucun montant** : le serveur ne
+  lui renvoie qu'un booléen (`low`), et la phrase affichée est sans chiffre.
 
 Les actions d'**écriture** (enregistrer, supprimer, tester) et la **lecture des
 crédits** ne sont possibles que depuis **cet ordinateur** (boucle locale
@@ -275,8 +275,9 @@ n'est pas concerné.
 - `POST /admin/credits/refresh` — relit les crédits immédiatement (boucle locale
   uniquement).
 - `GET /local/credits` — version minimale pour la page principale :
-  `{ configured, ok, warning }`. **Aucun montant** n'y figure (le pair du réseau
-  local n'apprend qu'un booléen), car ces chiffres sont financiers.
+  `{ configured, ok, low }` où **`low` est un simple booléen** (« le crédit
+  connu est sous 1 $ »). **Aucun montant** n'y figure, ni chiffre ni phrase
+  chiffrée : la page compose elle-même la phrase, sans montant.
   Sont **réservées à la boucle locale** (`403` sinon) : `GET /admin/credits`,
   `POST /admin/credits/refresh`, ainsi que l'écriture et le test de la clé
   (`PUT`/`DELETE /admin/openrouter-key`, `POST /admin/openrouter-key/test`).

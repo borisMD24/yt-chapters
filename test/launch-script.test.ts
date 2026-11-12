@@ -57,24 +57,6 @@ test('scripts/launch.ps1 porte les options, les installations proposées et les 
 
 // ---------- consentement d'installation (invariant BLOQUANT) ----------
 
-test('les deux invites d’installation refusent par défaut et n’acceptent qu’un « oui » explicite', () => {
-  const content = readFileSync(scriptPath, 'utf8');
-
-  // Le garde-fou POSITIF doit être présent (l'ancienne forme inversée
-  // `-notmatch '^(n|non|no)$'` installait sur '', ' ', 'q', 'n '…).
-  const positiveGuards = content.split("-notmatch '^(o|oui|y|yes)$'").length - 1;
-  assert.equal(positiveGuards, 2, 'les DEUX invites doivent utiliser le garde-fou positif');
-
-  // Défaut = REFUSER, y compris quand `Read-Host` échoue (pas de console).
-  const declines = content.split("$answer = 'n'").length - 1;
-  assert.ok(declines >= 4, `défaut « n » attendu pour chaque invite et son catch (trouvé ${declines})`);
-
-  // Formes interdites : garde-fou inversé, défaut « o ».
-  assert.ok(!content.includes("-notmatch '^(n|non|no)$'"), 'aucun garde-fou inversé ne doit subsister');
-  assert.ok(!content.includes("$answer = 'o'"), 'le défaut ne doit jamais être « o » (installation silencieuse)');
-  assert.ok(!/\} catch \{ \$answer = 'o' \}/.test(content), 'un Read-Host en échec ne doit jamais accepter');
-});
-
 test('un `winget` (ou `npm`) factice prouve que -Check ne peut PAS être atteint par une installation', () => {
   // Un faux `winget` et un faux `npm` en tête de PATH : s'ils étaient appelés,
   // ils écriraient un marqueur. `-Check` ne doit toucher aucun des deux.
@@ -94,6 +76,97 @@ test('un `winget` (ou `npm`) factice prouve que -Check ne peut PAS être atteint
   assert.equal(existsSync(wingetMarker), false, '-Check ne doit JAMAIS appeler winget');
   assert.equal(existsSync(npmMarker), false, '-Check ne doit jamais lancer npm');
   assert.ok(`${result.stdout}`.includes('Preflight termine'));
+});
+
+// ---------- consentement d'installation : AutomationNull doit REFUSER ----------
+
+const consentPath = join(root, 'scripts', 'consent.ps1');
+
+/** Exécute un script PowerShell court (encodé, donc insensible au quoting). */
+function runPs(script: string, input?: string): string {
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 120_000,
+    input: input ?? '',
+  });
+  assert.equal(result.error, undefined, `le sous-processus doit démarrer (${result.error?.message})`);
+  return `${result.stdout}`;
+}
+
+test('la décision de consentement refuse AutomationNull (entrée fermée) et n’accepte qu’un « oui »', () => {
+  // Le script reproduit EXACTEMENT le motif des deux invites : défaut « n »,
+  // `Read-Host`, puis la décision partagée. Sur une entrée fermée (stdin à EOF),
+  // `Read-Host` ne lève pas d'exception mais renvoie AutomationNull : l'ancienne
+  // forme `$answer -notmatch '…'` renvoyait alors AutomationNull (faux) et
+  // laissait passer l'installation. Ce test ÉCHOUERAIT sur cette ancienne forme
+  // (il afficherait INSTALLE) — c'est exactement la régression à verrouiller.
+  const probe = `
+. '${consentPath}'
+$answer = 'n'
+try { $answer = Read-Host 'Installer avec winget ? (o/N)' } catch { $answer = 'n' }
+$isAutomationNull = [object]::ReferenceEquals($answer, [System.Management.Automation.Internal.AutomationNull]::Value)
+'AutomationNull=' + $isAutomationNull
+$decision = Test-InstallConsent $answer
+'bool=' + ($decision -is [bool])
+if (-not (Test-InstallConsent $answer)) { 'VERDICT=REFUSE' } else { 'VERDICT=INSTALLE' }
+`;
+
+  // 1. Entrée fermée (aucune réponse) → AutomationNull → refus.
+  const closed = runPs(probe);
+  assert.match(closed, /AutomationNull=True/, 'le cas testé doit bien être AutomationNull');
+  // La décision doit être un VRAI booléen : une comparaison sur la valeur brute
+  // renverrait AutomationNull (ni vrai ni faux), ce qui rouvrirait la faille
+  // selon la façon dont le résultat est ensuite testé.
+  assert.match(closed, /bool=True/, 'la décision doit renvoyer un booléen, jamais AutomationNull');
+  assert.match(closed, /VERDICT=REFUSE/, 'sans réponse, aucune installation ne doit être autorisée');
+
+  // 2. Contrôles positifs et négatifs sur de VRAIES réponses.
+  for (const [input, expected] of [
+    ['o\n', 'VERDICT=INSTALLE'],
+    ['O\n', 'VERDICT=INSTALLE'],
+    ['oui\n', 'VERDICT=INSTALLE'],
+    ['yes\n', 'VERDICT=INSTALLE'],
+    ['\n', 'VERDICT=REFUSE'],
+    [' \n', 'VERDICT=REFUSE'],
+    ['q\n', 'VERDICT=REFUSE'],
+    ['n \n', 'VERDICT=REFUSE'],
+    ['non\n', 'VERDICT=REFUSE'],
+    ['N\n', 'VERDICT=REFUSE'],
+    ['0\n', 'VERDICT=REFUSE'],
+  ] as const) {
+    const out = runPs(probe, input);
+    assert.match(out, new RegExp(expected), `entrée ${JSON.stringify(input)} → ${expected} (sortie : ${out})`);
+  }
+});
+
+test('les deux invites passent par la décision partagée (aucun garde-fou local)', () => {
+  const consent = readFileSync(consentPath, 'utf8');
+  const content = readFileSync(scriptPath, 'utf8');
+
+  // La comparaison STRINGIFIÉE (la seule qui neutralise AutomationNull) vit dans
+  // le module testé ci-dessus.
+  assert.ok(
+    consent.includes('"$Answer" -match \'^(o|oui|y|yes)$\''),
+    'la décision doit comparer une CHAÎNE ("$Answer") et non la valeur brute',
+  );
+  // Le code exécutable (commentaires retirés : ils CITENT l'ancienne forme fautive
+  // pour expliquer le piège).
+  const consentCode = consent
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('#'))
+    .join('\n');
+  assert.ok(
+    !/\$Answer -match/.test(consentCode) && !/\$Answer -notmatch/.test(consentCode),
+    'aucune comparaison ne doit porter sur la valeur brute $Answer (AutomationNull passerait)',
+  );
+  // Les deux invites du lanceur utilisent cette décision, et aucune ne compare
+  // directement la réponse (une telle comparaison rouvrirait la faille).
+  assert.equal((content.match(/-not \(Test-InstallConsent \$answer\)/g) ?? []).length, 2, 'les deux invites doivent utiliser Test-InstallConsent');
+  assert.ok(!/\$answer -notmatch/.test(content), 'aucune comparaison directe de $answer ne doit subsister');
+  assert.ok(content.includes(". (Join-Path $PSScriptRoot 'consent.ps1')"), 'le lanceur doit charger le module de consentement');
+  assert.equal((content.match(/\$answer = 'n'/g) ?? []).length, 4, 'défaut « n » pour chaque invite et son catch');
 });
 
 // ---------- base de données : db:push doit échouer bruyamment ----------

@@ -864,15 +864,17 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     return credits.get(true);
   });
 
-  // Version minimale pour la page principale : la page n'utilise QUE
-  // `warning` (avertissement discret de crédit presque épuisé). On ne divulgue
-  // donc AUCUN montant à un pair du réseau local : au plus un booléen.
+  // Version minimale pour la page principale : elle n'a besoin QUE de savoir si
+  // un avertissement s'impose. Le champ est donc un BOOLÉEN : aucun montant,
+  // aucune phrase chiffrée ne sort par ici (un pair du réseau local n'apprend
+  // qu'un état). Les chiffres restent sur `/admin/credits`, réservé à la boucle
+  // locale.
   app.get('/local/credits', async () => {
     const snapshot = await credits.get(false);
     return {
       configured: snapshot.configured,
       ok: snapshot.ok,
-      warning: snapshot.warning,
+      low: snapshot.warning !== null,
     };
   });
 

@@ -317,26 +317,26 @@ test('sans clé, /admin/credits ne fait AUCUN appel réseau et /local/credits re
 
     const page = await app.inject({ method: 'GET', url: '/local/credits' });
     assert.equal(page.statusCode, 200);
-    assert.deepEqual(page.json(), { configured: false, ok: false, warning: null });
+    assert.deepEqual(page.json(), { configured: false, ok: false, low: false });
     assert.equal(calls, 0, 'aucun appel réseau sans clé');
   } finally {
     await app.close();
   }
 });
 
-test('la page principale ne reçoit que l’avertissement, jamais un montant', async () => {
+test('la page principale ne reçoit qu’un booléen, jamais un montant', async () => {
   const app = await makeApp({
     fetchImpl: (async () => jsonResponse({ data: { usage: 249.6, limit: 250, limit_remaining: 0.4 } })) as typeof fetch,
   });
   try {
     const res = await app.inject({ method: 'GET', url: '/local/credits' });
-    const body = res.json() as { configured: boolean; ok: boolean; warning: string | null };
-    assert.equal(body.configured, true);
-    assert.ok(body.warning);
-    assert.match(body.warning!, /0,40 \$/);
-    // Aucun montant exposé : un pair du réseau local n'apprend qu'un booléen.
-    assert.ok(!('limit_remaining' in body), 'aucun montant ne doit sortir par /local/credits');
-    assert.ok(!('usage' in body) && !('limit' in body));
+    const body = res.json() as { configured: boolean; ok: boolean; low: boolean };
+    // Charge utile EXACTE : trois champs, aucun chiffre, aucune phrase chiffrée.
+    assert.deepEqual(body, { configured: true, ok: true, low: true });
+    const json = JSON.stringify(body);
+    assert.ok(!json.includes('limit_remaining'), 'aucun montant ne doit sortir par /local/credits');
+    assert.ok(!/[\d]/.test(json.replace(/"(configured|ok|low)"/g, '')), 'aucun chiffre dans la charge utile');
+    assert.ok(!json.includes('$'), 'aucun montant en dollars');
     assertNoLeak(KEY, body, 'GET /local/credits');
   } finally {
     await app.close();
@@ -351,7 +351,7 @@ test('GET /local/credits reste accessible en lecture, mais sans montant', async 
     // Un pair du réseau local obtient 200, mais seulement l'état booléen.
     const res = await app.inject({ method: 'GET', url: '/local/credits', remoteAddress: '203.0.113.9' });
     assert.equal(res.statusCode, 200);
-    assert.deepEqual(res.json(), { configured: true, ok: true, warning: null });
+    assert.deepEqual(res.json(), { configured: true, ok: true, low: false });
   } finally {
     await app.close();
   }
@@ -478,11 +478,7 @@ test('la page principale affiche (et masque) l’avertissement de crédit discre
       return {
         ok: true,
         status: 200,
-        json: async () => ({
-          configured: true,
-          ok: true,
-          warning: 'Crédit OpenRouter presque épuisé : il vous reste 0,40 $.',
-        }),
+        json: async () => ({ configured: true, ok: true, low: true }),
       };
     }
     throw new Error('URL inattendue : ' + url);
@@ -490,10 +486,14 @@ test('la page principale affiche (et masque) l’avertissement de crédit discre
   await settle();
   assert.equal(withWarning.el('credit-banner').hidden, false, 'l’avertissement doit être visible');
   assert.match(withWarning.el('credit-text').textContent, /presque épuisé/);
+  assert.ok(
+    !/\d/.test(withWarning.el('credit-text').textContent),
+    'la phrase de la page ne doit contenir aucun montant',
+  );
 
   const without = bootPage(async (url: string) => {
     if (url === '/local/credits') {
-      return { ok: true, status: 200, json: async () => ({ configured: true, ok: true, warning: null }) };
+      return { ok: true, status: 200, json: async () => ({ configured: true, ok: true, low: false }) };
     }
     throw new Error('URL inattendue : ' + url);
   });

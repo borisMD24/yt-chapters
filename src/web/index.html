@@ -872,18 +872,20 @@
         }
 
         /**
-         * Avertissement discret : crédit OpenRouter presque épuisé. Le serveur
-         * ne dit QUE si un avertissement s'impose (restant connu et sous le
-         * seuil) — jamais la clé, jamais de chiffres inutiles. Non bloquant :
-         * si la route échoue, on n'affiche simplement rien.
+         * Avertissement discret : crédit OpenRouter presque épuisé. Le serveur ne
+         * renvoie qu'un BOOLÉEN (`low`) — aucun montant n'est exposé par cette
+         * route, qui reste lisible depuis le réseau local. La phrase, sans
+         * chiffre, est donc composée ici. Non bloquant : si la route échoue, on
+         * n'affiche simplement rien.
          */
         function loadCredits() {
           fetch('/local/credits')
             .then(readJson)
             .then((res) => {
               var data = (res && res.data) || {};
-              if (data.warning) {
-                els.creditText.textContent = data.warning + ' Voir la page Administration.';
+              if (data.low) {
+                els.creditText.textContent =
+                  'Le crédit OpenRouter est presque épuisé : rechargez votre compte sur openrouter.ai pour éviter une interruption. Voir la page Administration pour les montants.';
                 els.creditBanner.hidden = false;
                 return;
               }

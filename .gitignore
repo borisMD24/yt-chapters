@@ -5,3 +5,5 @@ data/*.db*
 data/uploads/
 # Journaux du lanceur (Démarrer.cmd) : locaux, jamais versionnés.
 logs/
+# Sauvegardes d'éditeur : jamais versionnées.
+*.bak
