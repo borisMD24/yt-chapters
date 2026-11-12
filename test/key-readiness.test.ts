@@ -152,7 +152,10 @@ test('friendlyErrorMessage garde son repli générique et le cas ffmpeg', () => 
 });
 
 test('le message « clé manquante » ne contient jamais la clé utilisée', () => {
-  const secret = 'sk-or-v1-deadbeefdeadbeefdeadbeef';
+  // Valeur assemblée à l'exécution : le motif « sk-or-v1- » suivi de la chaîne
+  // n'apparaît pas en clair dans le fichier, pour ne pas déclencher le secret
+  // scanning des hébergeurs (GitHub est partenaire d'OpenRouter).
+  const secret = ['sk-or-v1', 'deadbeefdeadbeefdeadbeef'].join('-');
   const message = friendlyErrorMessage(new Error(`OpenRouter STT 401: Missing Authentication header (key ${secret})`));
   assert.equal(message, OPENROUTER_KEY_MISSING_MESSAGE);
   assert.ok(!message.includes(secret));
