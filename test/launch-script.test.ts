@@ -1,9 +1,9 @@
 // Tests du démarrage en un clic : l'enveloppe `Démarrer.cmd`, le script
 // `scripts/launch.ps1` et son mode préflight `-Check`.
 //
-// `-Check` est réellement exécuté comme SOUS-PROCESSUS (c'est ce que le
-// coordinateur lancera), mais il ne doit RIEN installer, RIEN démarrer et
-// n'écrire qu'à l'intérieur de `logs/`. Aucun accès réseau n'est nécessaire.
+// `-Check` est réellement exécuté comme SOUS-PROCESSUS, mais il ne doit RIEN
+// installer, RIEN démarrer et n'écrire qu'à l'intérieur de `logs/`. Aucun accès
+// réseau n'est nécessaire.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
