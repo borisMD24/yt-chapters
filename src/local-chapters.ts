@@ -191,8 +191,8 @@ export async function generateLocalChapters(
 }
 
 /**
- * Taille des lots d'insertion des mots : un média de 2 h 55 en produit ~150 000,
- * l'insertion unitaire serait inutilisable. 1 000 lignes × 5 colonnes restent
+ * Taille des lots d'insertion des mots : un média de 3 h en produit ≈ 27 000,
+ * l'insertion unitaire serait inutilisable. 1 000 lignes × 4 colonnes restent
  * très en deçà du plafond de variables de SQLite.
  */
 export const WORDS_INSERT_BATCH = 1000;

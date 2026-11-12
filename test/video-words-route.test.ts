@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { FastifyInstance } from 'fastify';
 import { WORDS_MAX_COUNT } from '../src/video-words.ts';
+import { ensureMediaWordsTable } from '../src/db/media-words.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'ckr-words-'));
 const mediaDir = join(root, 'media');
@@ -154,7 +155,8 @@ test('GET /videos/:id/edit indique la présence de mots (hasWords)', async () =>
   assert.equal((withoutWords.json() as { hasWords: boolean }).hasWords, false);
 });
 
-// DERNIER test du fichier : il SUPPRIME `media_words` de la base partagée.
+// Ce test SUPPRIME `media_words` ; il la RESTAURE (vide) à la fin pour ne
+// dépendre d'aucun ordre d'exécution ni laisser la base partagée amputée.
 test('table media_words ABSENTE : dégradation honnête (200 / hasWords false), jamais 500', async () => {
   const raw = new Database(process.env.DB_PATH!);
   raw.exec('DROP TABLE media_words');
@@ -177,4 +179,9 @@ test('table media_words ABSENTE : dégradation honnête (200 / hasWords false), 
   // L'absence de table ne masque pas les autres cas : vidéo inconnue → 404.
   const unknown = await app.inject({ method: 'GET', url: '/videos/local:jamaisvu/words?from=0&to=10' });
   assert.equal(unknown.statusCode, 404);
+
+  // Restauration : la table (et son index) existent de nouveau, vides.
+  const restore = new Database(process.env.DB_PATH!);
+  assert.equal(ensureMediaWordsTable(restore), true);
+  restore.close();
 });
