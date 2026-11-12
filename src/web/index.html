@@ -554,6 +554,11 @@
         <p id="health-text"></p>
       </div>
 
+      <!-- Crédit OpenRouter presque épuisé : avertissement discret, jamais bloquant -->
+      <div id="credit-banner" class="banner warn" role="status" hidden>
+        <p id="credit-text"></p>
+      </div>
+
       <!-- Étape 1 -->
       <section class="step" aria-labelledby="title-1">
         <h2 id="title-1"><span class="stepnum" aria-hidden="true">1</span> Choisir un fichier</h2>
@@ -758,6 +763,8 @@
           techErrorText: $('tech-error-text'),
           healthBanner: $('health-banner'),
           healthText: $('health-text'),
+          creditBanner: $('credit-banner'),
+          creditText: $('credit-text'),
         };
 
         // ---------- utilitaires ----------
@@ -861,6 +868,32 @@
             })
             .catch(() => {
               /* page utilisable même si la santé est indisponible */
+            });
+        }
+
+        /**
+         * Avertissement discret : crédit OpenRouter presque épuisé. Le serveur
+         * ne dit QUE si un avertissement s'impose (restant connu et sous le
+         * seuil) — jamais la clé, jamais de chiffres inutiles. Non bloquant :
+         * si la route échoue, on n'affiche simplement rien.
+         */
+        function loadCredits() {
+          fetch('/local/credits')
+            .then(readJson)
+            .then((res) => {
+              var data = (res && res.data) || {};
+              if (data.warning) {
+                els.creditText.textContent = data.warning + ' Voir la page Administration.';
+                els.creditBanner.hidden = false;
+                return;
+              }
+              els.creditText.textContent = '';
+              els.creditBanner.hidden = true;
+            })
+            .catch(() => {
+              /* page utilisable même si les crédits sont indisponibles */
+              els.creditText.textContent = '';
+              els.creditBanner.hidden = true;
             });
         }
 
@@ -1469,6 +1502,7 @@
         loadMedia();
         loadHistory();
         loadHealth();
+        loadCredits();
         updateChoiceNote();
       })();
     </script>

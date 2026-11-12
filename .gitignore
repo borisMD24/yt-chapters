@@ -3,3 +3,5 @@ node_modules
 data/*.db*
 # Cache d'envoi runtime (médias de l'utilisateur) : jamais versionné.
 data/uploads/
+# Journaux du lanceur (Démarrer.cmd) : locaux, jamais versionnés.
+logs/

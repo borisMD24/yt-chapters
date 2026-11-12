@@ -5,6 +5,58 @@ Génère des chapitres YouTube à partir :
 - d'un **média local** (vidéo ou audio) : découpe `ffmpeg` → transcription
   Whisper (OpenRouter) → chapitrage LLM.
 
+## Démarrage en un clic (Windows)
+
+**Double-cliquez sur `Démarrer.cmd`** à la racine du projet : une fenêtre
+s'ouvre, et l'outil fait le reste.
+
+1. **Vérifie Node.js** (20 minimum). S'il manque ou est trop ancien, il propose
+   de l'installer avec `winget` (par défaut : oui) ; en cas de refus ou d'échec,
+   il ouvre <https://nodejs.org/fr/download> et explique quoi installer.
+2. **Vérifie `ffmpeg` et `ffprobe`.** S'ils manquent, il propose
+   `winget install --id Gyan.FFmpeg` ; sinon il ouvre
+   <https://www.gyan.dev/ffmpeg/builds/> et indique quoi télécharger et où le
+   placer (`PATH`). Après une installation `winget`, le script **relit le `PATH`
+   du registre** : si l'outil n'est toujours pas visible, il vous demande de
+   fermer la fenêtre puis de double-cliquer de nouveau.
+3. **Installe les dépendances** (`npm ci`, repli `npm install`) si nécessaire.
+4. **Prépare la configuration** : `.env` créé depuis `.env.example` s'il manque
+   (la clé OpenRouter se renseigne ensuite dans la page Administration).
+5. **Prépare la base** (`npm run db:push`) lors d'une première installation.
+6. **Choisit un port libre** : 3000, sinon 3001…3010 ; il annonce lequel.
+7. **Démarre le serveur**, duplique sa sortie dans `logs/serveur-<horodatage>.log`
+   **et** ses propres étapes dans `logs/demarrage-<horodatage>.log`.
+8. **Attend que le serveur réponde** (`GET /local/health`, jusqu'à 30 s) puis
+   **ouvre le navigateur**. En cas d'échec, il affiche les dernières lignes du
+   journal et un diagnostic en français (port occupé, ffmpeg manquant, base
+   verrouillée…).
+9. **À la fermeture** (Ctrl+C ou fenêtre fermée), il arrête proprement le serveur.
+
+> Le dossier `logs/` est créé à la demande et **ignoré par git**. Son chemin est
+> affiché au démarrage et dans la page d'administration.
+
+Démarrage en ligne de commande, avec des options :
+
+```bat
+Démarrer.cmd -Check        :: préflight seul : rapporte l'état et sort sans rien installer ni démarrer
+Démarrer.cmd -NoBrowser    :: démarre sans ouvrir le navigateur
+Démarrer.cmd -Port 3001    :: force le port
+```
+
+`-Check` n'écrit que dans `logs/` et ne démarre rien : c'est ce qu'utilisent les
+tests pour vérifier l'environnement.
+
+### Dépannage
+
+| Symptôme | Que faire |
+| --- | --- |
+| « Node.js introuvable » ou version trop ancienne | Acceptez l'installation `winget` proposée, ou installez Node.js LTS depuis <https://nodejs.org/fr/download>, puis relancez `Démarrer.cmd`. |
+| ffmpeg/ffprobe introuvables | Acceptez l'installation `winget` (Gyan.FFmpeg), ou téléchargez « ffmpeg-release-full.7z » sur <https://www.gyan.dev/ffmpeg/builds/>, décompressez-le et **ajoutez son dossier `bin` au `PATH`**, puis rouvrez une fenêtre. |
+| Le port 3000 est occupé | `Démarrer.cmd -Port 3001` (ou fermez le programme qui occupe le port). Le lanceur teste déjà 3000 à 3010. |
+| Windows demande l'autorisation du Pare-feu | Acceptez pour « Réseaux privés » : l'outil écoute sur `0.0.0.0` pour être joignable depuis votre réseau local. Sinon autorisez seulement « Réseaux privés », ou faites écouter le serveur sur la boucle locale (voir plus bas). |
+| « Aucune clé OpenRouter n'est configurée » | Ouvrez <http://localhost:3000/admin>, collez la clé, **Enregistrez** puis **Testez la clé**. |
+| Installation des dépendances impossible | Vérifiez la connexion Internet, puis relancez `Démarrer.cmd`. Les journaux détaillés sont dans `logs/`. |
+
 ## Prérequis
 
 - Node 22+ (fetch natif), `ffmpeg`/`ffprobe` dans le `PATH`.
@@ -65,9 +117,17 @@ Plus besoin de toucher au `.env` : ouvrez la section d'administration.
   > <https://openrouter.ai/settings/keys>.
 - **Outils et dossiers** : ffmpeg/ffprobe (versions), dossier des médias (avec
   avertissement s'il est introuvable), plafond d'envoi,
-  cache d'envoi (nombre de fichiers, taille, rétention), chemin de la base.
+  cache d'envoi (nombre de fichiers, taille, rétention), chemin de la base et
+  **dossier des journaux** (`logs/`, écrits par `Démarrer.cmd`).
   Le bouton **Vider le cache** (boucle locale uniquement) supprime les médias conservés ;
   les chapitres déjà enregistrés ne sont pas touchés.
+- **Crédits OpenRouter** : usage, limite, restant, date d'expiration et dernière
+  lecture, plus une phrase en clair (« Il vous reste 12,40 $ sur 250 $ », « Aucune
+  limite définie sur cette clé »). Les chiffres viennent de
+  `GET /api/v1/key`, sont **mis en cache 60 s** et relus à la demande avec le
+  bouton **Rafraîchir** (boucle locale uniquement). La clé n'est jamais exposée.
+  La page principale affiche un avertissement **discret et non bloquant** quand
+  le restant connu passe sous 1 $.
 
 Les actions d'**écriture** (enregistrer, supprimer, tester) ne sont possibles
 que depuis **cet ordinateur** (boucle locale `127.0.0.1`/`::1`) ; toute autre
@@ -201,7 +261,15 @@ n'est pas concerné.
   français. Une clé **d'administration** (provisioning/management) est signalée
   comme inapte à la transcription : utilisez une clé d'API normale
   (<https://openrouter.ai/settings/keys>).
-  Les trois dernières routes sont **réservées à la boucle locale** (`403` sinon).
+- `GET /admin/credits` — crédits du compte (`usage`, `limit`, `limit_remaining`,
+  `expires_at`, `fetchedAt`) mis en cache 60 s ; jamais la clé. Sans clé, aucun
+  appel réseau et un message en français.
+- `POST /admin/credits/refresh` — relit les crédits immédiatement (boucle locale
+  uniquement).
+- `GET /local/credits` — version minimale pour la page principale
+  (`{ configured, ok, limit_remaining?, warning }`).
+  Les routes d'écriture et de relecture sont **réservées à la boucle locale**
+  (`403` sinon).
 
 ## CLI (média local)
 

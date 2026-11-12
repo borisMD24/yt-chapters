@@ -368,6 +368,29 @@
         </div>
       </section>
 
+      <section class="step" aria-labelledby="title-credits">
+        <h2 id="title-credits">Crédits OpenRouter</h2>
+        <div class="card">
+          <p id="credits-summary"><strong>Chargement…</strong></p>
+          <dl class="facts">
+            <dt>Utilisation</dt>
+            <dd id="credits-usage">—</dd>
+            <dt>Limite</dt>
+            <dd id="credits-limit">—</dd>
+            <dt>Restant</dt>
+            <dd id="credits-remaining">—</dd>
+            <dt>Expiration</dt>
+            <dd id="credits-expires">—</dd>
+            <dt>Dernière lecture</dt>
+            <dd id="credits-fetched">—</dd>
+          </dl>
+          <div class="row-actions">
+            <button id="credits-refresh" class="btn btn-secondary" type="button">Rafraîchir</button>
+          </div>
+          <p id="credits-note" class="help" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+
       <section class="step" aria-labelledby="title-tools">
         <h2 id="title-tools">Outils et dossiers</h2>
         <div class="card">
@@ -382,6 +405,8 @@
             <dd id="upload-cache">—</dd>
             <dt>Base de données</dt>
             <dd id="db-path">—</dd>
+            <dt>Dossier des journaux</dt>
+            <dd id="logs-dir">—</dd>
           </dl>
           <div id="media-warn" class="banner warn" role="status" hidden>
             <p id="media-warn-text"></p>
@@ -436,6 +461,15 @@
           cache: $('upload-cache'),
           clearCache: $('clear-cache'),
           dbPath: $('db-path'),
+          logsDir: $('logs-dir'),
+          creditsSummary: $('credits-summary'),
+          creditsUsage: $('credits-usage'),
+          creditsLimit: $('credits-limit'),
+          creditsRemaining: $('credits-remaining'),
+          creditsExpires: $('credits-expires'),
+          creditsFetched: $('credits-fetched'),
+          creditsRefresh: $('credits-refresh'),
+          creditsNote: $('credits-note'),
         };
 
         /** Lit une réponse JSON sans planter si le corps n'est pas du JSON. */
@@ -525,6 +559,7 @@
           els.mediaDir.textContent = data.mediaDir || '—';
           els.uploadMax.textContent = data.uploadMaxMb ? data.uploadMaxMb + ' Mo' : '—';
           els.dbPath.textContent = data.dbPath || '—';
+          els.logsDir.textContent = data.logsDir || '—';
 
           var cache = data.uploadCache || {};
           if (cache.dir) {
@@ -548,6 +583,46 @@
           } else {
             els.mediaWarn.hidden = true;
           }
+        }
+
+        /** Montant en dollars, format français (— si inconnu). */
+        function formatMoney(value) {
+          if (typeof value !== 'number' || !isFinite(value)) return '—';
+          var rounded = Math.round(value * 100) / 100;
+          var text = Number.isInteger(rounded)
+            ? rounded.toLocaleString('fr-FR')
+            : rounded.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          return text + ' $';
+        }
+
+        /**
+         * Panneau « Crédits OpenRouter » : chiffres du compte, phrase en clair
+         * et rappel de la fraîcheur du cache. Jamais la clé.
+         */
+        function renderCredits(credits) {
+          var c = credits || {};
+          els.creditsSummary.textContent = c.summary || '—';
+          els.creditsUsage.textContent = formatMoney(c.usage);
+          els.creditsLimit.textContent = formatMoney(c.limit);
+          els.creditsRemaining.textContent = formatMoney(c.limit_remaining);
+          els.creditsExpires.textContent = c.expires_at ? formatDate(c.expires_at) : '—';
+          els.creditsFetched.textContent = c.fetchedAt ? formatDate(c.fetchedAt) : '—';
+          els.creditsNote.textContent = c.cached
+            ? 'Chiffres mis en cache (moins d’une minute) : cliquez sur « Rafraîchir » pour les relire.'
+            : '';
+        }
+
+        function loadCredits(force) {
+          fetch(force ? '/admin/credits/refresh' : '/admin/credits', force ? { method: 'POST' } : undefined)
+            .then(readJson)
+            .then(function (res) {
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              renderCredits(res.data || {});
+            })
+            .catch(function () {
+              els.creditsSummary.textContent = 'Impossible de lire les crédits OpenRouter pour le moment.';
+              els.creditsNote.textContent = '';
+            });
         }
 
         function hideLoadError() {
@@ -637,6 +712,11 @@
           load();
         });
 
+        // Relecture forcée des crédits (sort sur le réseau) : boucle locale côté serveur.
+        els.creditsRefresh.addEventListener('click', function () {
+          loadCredits(true);
+        });
+
         // Vide le cache d'envoi : les médias conservés pour l'éditeur de bornes
         // sont supprimés (les chapitres enregistrés restent en base).
         els.clearCache.addEventListener('click', function () {
@@ -659,6 +739,7 @@
         });
 
         load();
+        loadCredits(false);
       })();
     </script>
   </body>

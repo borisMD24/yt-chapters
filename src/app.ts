@@ -51,6 +51,7 @@ import {
   storeOpenRouterKey,
 } from './openrouter-key';
 import { testOpenRouterKey } from './openrouter-key-test';
+import { createCreditsProvider, type CreditsProvider } from './openrouter-credits';
 
 // Une seule source de vérité pour les extensions acceptées (liste MEDIA_DIR
 // et envoi de fichier).
@@ -107,6 +108,12 @@ export type AppOptions = {
   preflight?: boolean;
   /** `fetch` injectable pour le test de clé OpenRouter (tests, jamais le réseau). */
   keyTestFetch?: typeof fetch;
+  /** Fournisseur de crédits injectable (tests) ; par défaut, cache 60 s + réseau. */
+  credits?: CreditsProvider;
+  /** `fetch` injectable pour la lecture des crédits (tests, jamais le réseau). */
+  creditsFetch?: typeof fetch;
+  /** Durée de cache des crédits en millisecondes (tests). */
+  creditsTtlMs?: number;
 };
 
 const idParam = z.object({ id: z.string().min(1) });
@@ -121,6 +128,17 @@ export function mediaDir(): string {
   const fromEnv = process.env.MEDIA_DIR;
   if (fromEnv && fromEnv.trim()) return resolve(fromEnv.trim());
   return resolve(process.cwd(), '..', '..');
+}
+
+/**
+ * Dossier des journaux écrits par `Démarrer.cmd` / `scripts/launch.ps1`
+ * (`logs/`, ignoré par git). Le serveur ne les écrit pas lui-même : il se
+ * contente d'indiquer où ils se trouvent, à l'écran comme dans `/admin`.
+ */
+export function logsDir(): string {
+  const fromEnv = process.env.CKR_LOGS_DIR;
+  if (fromEnv && fromEnv.trim()) return resolve(fromEnv.trim());
+  return resolve(process.cwd(), 'logs');
 }
 
 /**
@@ -190,6 +208,12 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       }
     });
   }
+
+  // Crédits OpenRouter : instantanés en cache 60 s, jamais la clé. Un seul
+  // fournisseur par application, partagé par `/admin/credits` et la page.
+  const credits =
+    options.credits ??
+    createCreditsProvider({ fetchImpl: options.creditsFetch, ttlMs: options.creditsTtlMs });
 
   // Envoi de fichier : le corps brut (flux) est remis tel quel à la route, qui
   // l'écrit au fur et à mesure. Aucun tamponnage mémoire, donc aucune limite
@@ -803,9 +827,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   app.get('/admin', async (_req, reply) => {
     const html = await readFile(new URL('./web/admin.html', import.meta.url), 'utf8');
     return reply.type('text/html; charset=utf-8').send(html);
-  });
-
-  // Lecture seule : ouverte, mais ne renvoie JAMAIS la clé (masque au plus).
+  });  // Lecture seule : ouverte, mais ne renvoie JAMAIS la clé (masque au plus).
   app.get('/admin/settings', async () => {
     const tools = await checkTools(toolChecker);
     const dir = mediaDir();
@@ -820,6 +842,31 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       uploadCache: await uploadCacheStats(),
       uploadRetentionDays: uploadRetentionDays(),
       dbPath,
+      logsDir: logsDir(),
+    };
+  });
+
+  // Crédits du compte OpenRouter (usage, limite, restant, expiration) : lecture
+  // mise en cache 60 s. Aucune clé dans la réponse, et aucun appel réseau sans
+  // clé exploitable. Ouverte en lecture, comme `/admin/settings`.
+  app.get('/admin/credits', async () => credits.get(false));
+
+  // Relecture forcée (action « Rafraîchir » de l'administration) : elle sort sur
+  // le réseau, donc boucle locale uniquement.
+  app.post('/admin/credits/refresh', async (req, reply) => {
+    if (!allowLocalOnly(req, reply)) return;
+    return credits.get(true);
+  });
+
+  // Version minimale pour la page principale : de quoi afficher l'avertissement
+  // discret de crédit presque épuisé, sans exposer les détails du compte.
+  app.get('/local/credits', async () => {
+    const snapshot = await credits.get(false);
+    return {
+      configured: snapshot.configured,
+      ok: snapshot.ok,
+      ...(snapshot.limit_remaining !== undefined ? { limit_remaining: snapshot.limit_remaining } : {}),
+      warning: snapshot.warning,
     };
   });
 
