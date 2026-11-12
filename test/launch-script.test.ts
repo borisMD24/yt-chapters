@@ -6,8 +6,9 @@
 // n'écrire qu'à l'intérieur de `logs/`. Aucun accès réseau n'est nécessaire.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,6 +53,77 @@ test('scripts/launch.ps1 porte les options, les installations proposées et les 
     'relecture du PATH depuis le registre attendue',
   );
   assert.ok(content.includes("@('Machine', 'User')"), 'les portées Machine et Utilisateur doivent être relues');
+});
+
+// ---------- consentement d'installation (invariant BLOQUANT) ----------
+
+test('les deux invites d’installation refusent par défaut et n’acceptent qu’un « oui » explicite', () => {
+  const content = readFileSync(scriptPath, 'utf8');
+
+  // Le garde-fou POSITIF doit être présent (l'ancienne forme inversée
+  // `-notmatch '^(n|non|no)$'` installait sur '', ' ', 'q', 'n '…).
+  const positiveGuards = content.split("-notmatch '^(o|oui|y|yes)$'").length - 1;
+  assert.equal(positiveGuards, 2, 'les DEUX invites doivent utiliser le garde-fou positif');
+
+  // Défaut = REFUSER, y compris quand `Read-Host` échoue (pas de console).
+  const declines = content.split("$answer = 'n'").length - 1;
+  assert.ok(declines >= 4, `défaut « n » attendu pour chaque invite et son catch (trouvé ${declines})`);
+
+  // Formes interdites : garde-fou inversé, défaut « o ».
+  assert.ok(!content.includes("-notmatch '^(n|non|no)$'"), 'aucun garde-fou inversé ne doit subsister');
+  assert.ok(!content.includes("$answer = 'o'"), 'le défaut ne doit jamais être « o » (installation silencieuse)');
+  assert.ok(!/\} catch \{ \$answer = 'o' \}/.test(content), 'un Read-Host en échec ne doit jamais accepter');
+});
+
+test('un `winget` (ou `npm`) factice prouve que -Check ne peut PAS être atteint par une installation', () => {
+  // Un faux `winget` et un faux `npm` en tête de PATH : s'ils étaient appelés,
+  // ils écriraient un marqueur. `-Check` ne doit toucher aucun des deux.
+  const binDir = mkdtempSync(join(tmpdir(), 'ckr-launch-fakebin-'));
+  const wingetMarker = join(binDir, 'winget-appele.txt');
+  const npmMarker = join(binDir, 'npm-appele.txt');
+  writeFileSync(join(binDir, 'winget.cmd'), `@echo off\r\necho appele> "${wingetMarker}"\r\nexit /b 1\r\n`);
+  writeFileSync(join(binDir, 'npm.cmd'), `@echo off\r\necho appele> "${npmMarker}"\r\nexit /b 1\r\n`);
+
+  const result = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join('scripts', 'launch.ps1'), '-Check'],
+    { cwd: root, encoding: 'utf8', timeout: 180_000, env: { ...process.env, PATH: `${binDir};${process.env.PATH ?? ''}` } },
+  );
+
+  assert.equal(result.status, 0, `-Check doit sortir en 0 (${result.stdout}\n${result.stderr})`);
+  assert.equal(existsSync(wingetMarker), false, '-Check ne doit JAMAIS appeler winget');
+  assert.equal(existsSync(npmMarker), false, '-Check ne doit jamais lancer npm');
+  assert.ok(`${result.stdout}`.includes('Preflight termine'));
+});
+
+// ---------- base de données : db:push doit échouer bruyamment ----------
+
+test('la création du schéma vérifie le code de sortie et arrête le démarrage en cas d’échec', () => {
+  const content = readFileSync(scriptPath, 'utf8');
+  // Invocation correcte : arguments séparés (une seule chaîne donne « Unknown command »).
+  assert.ok(content.includes("Invoke-Npm -Arguments @('run', 'db:push')"), 'db:push doit être appelé avec des arguments séparés');
+  assert.ok(!content.includes("Invoke-Npm 'run db:push'"), 'forme fautive « run db:push » interdite');
+  assert.ok(/\$dbCode = Invoke-Npm -Arguments @\('run', 'db:push'\)/.test(content), 'le code de sortie doit être capturé');
+  assert.ok(/if \(\$dbCode -ne 0\) \{/.test(content), 'un code non nul doit être testé');
+  assert.ok(content.includes('le serveur ne sera PAS demarre'), 'un échec doit annoncer l’arrêt (pas de serveur cassé)');
+  assert.ok(content.includes('$script:LastNpmOutput | Select-Object -Last 10'), 'les dernières lignes doivent être imprimées');
+});
+
+test('npm run db:push fonctionne réellement dans ce dépôt (base temporaire, hors ligne)', () => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'ckr-launch-dbpush-'));
+  const dbPath = join(dbDir, 'schema.db');
+  // `npm` est un script `.cmd` : on passe par l'interpréteur de commandes
+  // (comme le ferait un double-clic), avec la base redirigée vers un fichier
+  // temporaire — aucun accès réseau, aucune écriture dans le dépôt.
+  const result = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', 'npm run db:push'], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 180_000,
+    env: { ...process.env, DB_PATH: dbPath },
+  });
+  assert.equal(result.status, 0, `npm run db:push doit réussir (${result.stdout}\n${result.stderr})`);
+  assert.ok(existsSync(dbPath), 'la base temporaire doit être créée');
+  assert.ok(!/Unknown command/i.test(`${result.stdout}${result.stderr}`), 'aucune « Unknown command » : invocation correcte');
 });
 
 test('démarrage -Check : sortie 0, statut attendu, et rien créé hors de logs/', () => {

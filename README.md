@@ -11,18 +11,22 @@ Génère des chapitres YouTube à partir :
 s'ouvre, et l'outil fait le reste.
 
 1. **Vérifie Node.js** (20 minimum). S'il manque ou est trop ancien, il propose
-   de l'installer avec `winget` (par défaut : oui) ; en cas de refus ou d'échec,
-   il ouvre <https://nodejs.org/fr/download> et explique quoi installer.
+   de l'installer avec `winget` — **la réponse par défaut est de refuser** : seule
+   une réponse explicitement affirmative (`o`, `oui`, `y`, `yes`) installe. En
+   cas de refus, d'absence de `winget` **ou d'échec de l'installation**, il ouvre
+   <https://nodejs.org/fr/download> et explique quoi installer.
 2. **Vérifie `ffmpeg` et `ffprobe`.** S'ils manquent, il propose
-   `winget install --id Gyan.FFmpeg` ; sinon il ouvre
-   <https://www.gyan.dev/ffmpeg/builds/> et indique quoi télécharger et où le
-   placer (`PATH`). Après une installation `winget`, le script **relit le `PATH`
-   du registre** : si l'outil n'est toujours pas visible, il vous demande de
-   fermer la fenêtre puis de double-cliquer de nouveau.
+   `winget install --id Gyan.FFmpeg` (là aussi, refus par défaut) ; sinon il
+   ouvre <https://www.gyan.dev/ffmpeg/builds/> et indique quoi télécharger et où
+   le placer (`PATH`). Après une installation `winget`, le script **relit le
+   `PATH` du registre** : si l'outil n'est toujours pas visible, il vous demande
+   de fermer la fenêtre puis de double-cliquer de nouveau.
 3. **Installe les dépendances** (`npm ci`, repli `npm install`) si nécessaire.
 4. **Prépare la configuration** : `.env` créé depuis `.env.example` s'il manque
    (la clé OpenRouter se renseigne ensuite dans la page Administration).
-5. **Prépare la base** (`npm run db:push`) lors d'une première installation.
+5. **Prépare la base** (`npm run db:push`) lors d'une première installation : si
+   la commande échoue, il affiche les dernières lignes de la sortie et **s'arrête
+   sans démarrer le serveur** (plutôt que de lancer une application sans schéma).
 6. **Choisit un port libre** : 3000, sinon 3001…3010 ; il annonce lequel.
 7. **Démarre le serveur**, duplique sa sortie dans `logs/serveur-<horodatage>.log`
    **et** ses propres étapes dans `logs/demarrage-<horodatage>.log`.
@@ -125,14 +129,18 @@ Plus besoin de toucher au `.env` : ouvrez la section d'administration.
   lecture, plus une phrase en clair (« Il vous reste 12,40 $ sur 250 $ », « Aucune
   limite définie sur cette clé »). Les chiffres viennent de
   `GET /api/v1/key`, sont **mis en cache 60 s** et relus à la demande avec le
-  bouton **Rafraîchir** (boucle locale uniquement). La clé n'est jamais exposée.
-  La page principale affiche un avertissement **discret et non bloquant** quand
-  le restant connu passe sous 1 $.
+  bouton **Rafraîchir**. Comme ce sont des chiffres **financiers**, la lecture
+  elle-même (`GET /admin/credits`) est **réservée à cet ordinateur** : un client
+  du réseau local reçoit un `403`. La clé n'est jamais exposée. La page principale
+  affiche un avertissement **discret et non bloquant** quand le restant connu
+  passe sous 1 $ — elle n'obtient, elle, **aucun montant** (juste ce
+  avertissement).
 
-Les actions d'**écriture** (enregistrer, supprimer, tester) ne sont possibles
-que depuis **cet ordinateur** (boucle locale `127.0.0.1`/`::1`) ; toute autre
-adresse reçoit un `403` en français. La lecture (`GET /admin/settings`) reste
-ouverte mais ne révèle jamais la clé.
+Les actions d'**écriture** (enregistrer, supprimer, tester) et la **lecture des
+crédits** ne sont possibles que depuis **cet ordinateur** (boucle locale
+`127.0.0.1`/`::1`) ; toute autre adresse reçoit un `403` en français. Seules
+`GET /admin/settings` (masque de clé) et `GET /local/credits` (booléen
+d'avertissement, sans montant) restent ouvertes en lecture.
 
 > ⚠️ **Stockage en clair.** La clé est écrite **en clair dans le fichier de base
 > SQLite local** — le même niveau de protection que le fichier `.env` qu'elle
@@ -266,10 +274,14 @@ n'est pas concerné.
   appel réseau et un message en français.
 - `POST /admin/credits/refresh` — relit les crédits immédiatement (boucle locale
   uniquement).
-- `GET /local/credits` — version minimale pour la page principale
-  (`{ configured, ok, limit_remaining?, warning }`).
-  Les routes d'écriture et de relecture sont **réservées à la boucle locale**
-  (`403` sinon).
+- `GET /local/credits` — version minimale pour la page principale :
+  `{ configured, ok, warning }`. **Aucun montant** n'y figure (le pair du réseau
+  local n'apprend qu'un booléen), car ces chiffres sont financiers.
+  Sont **réservées à la boucle locale** (`403` sinon) : `GET /admin/credits`,
+  `POST /admin/credits/refresh`, ainsi que l'écriture et le test de la clé
+  (`PUT`/`DELETE /admin/openrouter-key`, `POST /admin/openrouter-key/test`).
+  `GET /admin/settings` reste **ouverte en lecture** (masque de clé uniquement),
+  et `/local/credits` reste lisible, sans montant.
 
 ## CLI (média local)
 

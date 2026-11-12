@@ -91,7 +91,12 @@ test('le nettoyage de fin d’exécution enlève les fixtures du run et épargne
   const before = makeDir(root, 'ckr-fixture-avant-1', 3 * HOUR); // antérieur au run
   const other = makeDir(root, 'autre-namespace-1', 0); // hors préfixe applicatif
   const during = join(root, 'ckr-fixture-pendant-1');
-  const since = Date.now();
+  // Marge d'une seconde : les horodatages du système de fichiers ne sont pas
+  // garantis à la milliseconde près, donc comparer `since` à l'instant exact de
+  // la création du dossier rendait le test instable. L'invariant testé est bien
+  // celui du nettoyage : plus récent que la référence → enlevé, plus ancien →
+  // laissé au balayage d'âge.
+  const since = Date.now() - 1000;
   mkdirSync(during); // créé APRÈS le début du run simulé
 
   const removed = cleanupRunFixtureDirs(since, root);
@@ -106,7 +111,8 @@ test('le nettoyage de fin d’exécution ne jette jamais (racine absente, candid
   assert.deepEqual(cleanupRunFixtureDirs(Date.now(), join(tmpdir(), `ckr-absente-${randomUUID()}`)), []);
 
   const root = scratchRoot();
-  const since = Date.now();
+  // Même marge qu'au test précédent : aucune course à la milliseconde.
+  const since = Date.now() - 1000;
   const locked = join(root, 'ckr-fixture-verrouillee-1');
   mkdirSync(locked);
   const fd = openSync(join(locked, 'garde.bin'), 'w');

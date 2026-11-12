@@ -285,6 +285,14 @@ test('GET /admin/credits sert les chiffres, POST /admin/credits/refresh force la
     const remote = await app.inject({ method: 'POST', url: '/admin/credits/refresh', remoteAddress: '203.0.113.9' });
     assert.equal(remote.statusCode, 403);
     assert.equal(calls, 2, 'aucun appel réseau pour un client distant');
+
+    // LECTURE des chiffres financiers : elle aussi réservée à la boucle locale.
+    // Le refus est en français et ne déclenche AUCUN appel réseau.
+    const remoteRead = await app.inject({ method: 'GET', url: '/admin/credits', remoteAddress: '203.0.113.9' });
+    assert.equal(remoteRead.statusCode, 403);
+    assert.match((remoteRead.json() as { error: string }).error, /que depuis cet ordinateur/);
+    assert.equal(calls, 2, 'un client distant ne provoque aucun appel réseau');
+    assert.ok(!JSON.stringify(remoteRead.json()).includes('limit_remaining'), 'aucune donnée de compte dans le refus');
   } finally {
     await app.close();
   }
@@ -316,18 +324,34 @@ test('sans clé, /admin/credits ne fait AUCUN appel réseau et /local/credits re
   }
 });
 
-test('la page principale reçoit un avertissement quand le crédit est presque épuisé', async () => {
+test('la page principale ne reçoit que l’avertissement, jamais un montant', async () => {
   const app = await makeApp({
     fetchImpl: (async () => jsonResponse({ data: { usage: 249.6, limit: 250, limit_remaining: 0.4 } })) as typeof fetch,
   });
   try {
     const res = await app.inject({ method: 'GET', url: '/local/credits' });
-    const body = res.json() as { configured: boolean; ok: boolean; limit_remaining?: number; warning: string | null };
+    const body = res.json() as { configured: boolean; ok: boolean; warning: string | null };
     assert.equal(body.configured, true);
-    assert.equal(body.limit_remaining, 0.4);
     assert.ok(body.warning);
     assert.match(body.warning!, /0,40 \$/);
+    // Aucun montant exposé : un pair du réseau local n'apprend qu'un booléen.
+    assert.ok(!('limit_remaining' in body), 'aucun montant ne doit sortir par /local/credits');
+    assert.ok(!('usage' in body) && !('limit' in body));
     assertNoLeak(KEY, body, 'GET /local/credits');
+  } finally {
+    await app.close();
+  }
+});
+
+test('GET /local/credits reste accessible en lecture, mais sans montant', async () => {
+  const app = await makeApp({
+    fetchImpl: (async () => jsonResponse({ data: { usage: 1, limit: 10, limit_remaining: 9 } })) as typeof fetch,
+  });
+  try {
+    // Un pair du réseau local obtient 200, mais seulement l'état booléen.
+    const res = await app.inject({ method: 'GET', url: '/local/credits', remoteAddress: '203.0.113.9' });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.json(), { configured: true, ok: true, warning: null });
   } finally {
     await app.close();
   }
@@ -457,7 +481,6 @@ test('la page principale affiche (et masque) l’avertissement de crédit discre
         json: async () => ({
           configured: true,
           ok: true,
-          limit_remaining: 0.4,
           warning: 'Crédit OpenRouter presque épuisé : il vous reste 0,40 $.',
         }),
       };
@@ -470,7 +493,7 @@ test('la page principale affiche (et masque) l’avertissement de crédit discre
 
   const without = bootPage(async (url: string) => {
     if (url === '/local/credits') {
-      return { ok: true, status: 200, json: async () => ({ configured: true, ok: true, limit_remaining: 42, warning: null }) };
+      return { ok: true, status: 200, json: async () => ({ configured: true, ok: true, warning: null }) };
     }
     throw new Error('URL inattendue : ' + url);
   });

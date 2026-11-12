@@ -117,8 +117,11 @@ function Invoke-Npm {
   Say-Raw ("> npm " + ($Arguments -join ' '))
   $output = & npm @Arguments 2>&1
   $code = $LASTEXITCODE
+  # Sortie conservée pour les diagnostics (« pourquoi db:push a échoué ? »).
+  $script:LastNpmOutput = @()
   foreach ($line in $output) {
     $text = if ($line -is [System.Management.Automation.ErrorRecord]) { $line.ToString() } else { [string]$line }
+    $script:LastNpmOutput += $text
     Write-Host $text
     Write-Log $text 'NPM'
   }
@@ -239,9 +242,14 @@ function Invoke-Start {
       return 1
     }
 
-    $answer = 'o'
-    try { $answer = Read-Host 'Installer Node.js LTS maintenant avec winget ? (O/n)' } catch { $answer = 'o' }
-    if ($answer -match '^(n|non|no)$') {
+    # Consentement : DÉFAUT = REFUSER. Seule une réponse explicitement
+    # affirmative installe ; tout le reste (vide, espaces, « q », « non »,
+    # réponse inattendue) refuse, et un `Read-Host` impossible (pas de console)
+    # refuse aussi — aucune installation ne doit se déclencher sans question
+    # réellement posée.
+    $answer = 'n'
+    try { $answer = Read-Host 'Installer Node.js LTS maintenant avec winget ? (o/N)' } catch { $answer = 'n' }
+    if ($answer -notmatch '^(o|oui|y|yes)$') {
       Say 'Installation refusee.' 'ERREUR'
       Say "Telechargez Node.js LTS sur https://nodejs.org/fr/download, installez-le, puis relancez ce fichier." 'ERREUR'
       Open-Url 'https://nodejs.org/fr/download'
@@ -258,7 +266,8 @@ function Invoke-Start {
     $node = Get-NodeInfo
     if (-not $node.ok) {
       Say "Node.js n'est toujours pas utilisable dans cette fenetre." 'MANQUANT'
-      Say 'Fermez cette fenetre, puis double-cliquez de nouveau sur Demarrer.cmd : le nouveau PATH sera pris en compte.' 'MANQUANT'
+      Open-Url 'https://nodejs.org/fr/download'
+      Say 'Installez Node.js LTS depuis la page ouverte, puis relancez Demarrer.cmd (ou fermez cette fenetre et double-cliquez de nouveau : le nouveau PATH sera pris en compte).' 'MANQUANT'
       [void](Read-Host)
       return 1
     }
@@ -276,9 +285,13 @@ function Invoke-Start {
 
     $installed = $false
     if (Test-CommandAvailable 'winget') {
-      $answer = 'o'
-      try { $answer = Read-Host ("Installer {0} maintenant avec winget ? (O/n)" -f ($missing -join ' et ')) } catch { $answer = 'o' }
-      if ($answer -notmatch '^(n|non|no)$') {
+      # Même règle de consentement que pour Node.js : DÉFAUT = REFUSER, seule
+      # une réponse explicitement affirmative installe.
+      $answer = 'n'
+      try { $answer = Read-Host ("Installer {0} maintenant avec winget ? (o/N)" -f ($missing -join ' et ')) } catch { $answer = 'n' }
+      if ($answer -notmatch '^(o|oui|y|yes)$') {
+        Say ("Installation de {0} refusee : poursuite sans ffmpeg." -f ($missing -join ' et ')) 'MANQUANT'
+      } else {
         Say-Raw '> winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements'
         & winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements 2>&1 | ForEach-Object {
           Write-Host $_; Write-Log ([string]$_) 'WINGET'
@@ -352,7 +365,24 @@ function Invoke-Start {
   if (-not (Test-Path -LiteralPath $dbFile)) {
     Say 'Base de donnees absente : application du schema (npm run db:push)…' 'INFO'
     Push-Location -LiteralPath $script:Root
-    try { $null = Invoke-Npm -Arguments @('run', 'db:push') -Label 'npm run db:push' } finally { Pop-Location }
+    try {
+      # Arguments passés SÉPARÉMENT (`run`, `db:push`) : les joindre en une seule
+      # chaîne ferait répondre « Unknown command: "run db:push" » à npm.
+      $dbCode = Invoke-Npm -Arguments @('run', 'db:push') -Label 'npm run db:push'
+    } finally {
+      Pop-Location
+    }
+    if ($dbCode -ne 0) {
+      # Ne JAMAIS démarrer sur une base sans schéma : l'erreur serait ensuite
+      # attribuée à tort au serveur (« il ne repond pas »). On explique et on stop.
+      Say ("La creation du schema a echoue (npm run db:push, code {0}) : le serveur ne sera PAS demarre." -f $dbCode) 'ERREUR'
+      Say 'Dernieres lignes de la commande :' 'INFO'
+      foreach ($line in ($script:LastNpmOutput | Select-Object -Last 10)) { Write-Host $line }
+      Say 'Corrigez la cause ci-dessus (droits d ecriture sur data\, connexion Internet), puis relancez Demarrer.cmd.' 'ERREUR'
+      [void](Read-Host)
+      return 1
+    }
+    Say 'Schema applique (data/chapters.db).' 'OK'
   } else {
     Say 'Base de donnees presente' 'OK'
   }

@@ -827,7 +827,9 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   app.get('/admin', async (_req, reply) => {
     const html = await readFile(new URL('./web/admin.html', import.meta.url), 'utf8');
     return reply.type('text/html; charset=utf-8').send(html);
-  });  // Lecture seule : ouverte, mais ne renvoie JAMAIS la clé (masque au plus).
+  });
+
+  // Lecture seule : ouverte, mais ne renvoie JAMAIS la clé (masque au plus).
   app.get('/admin/settings', async () => {
     const tools = await checkTools(toolChecker);
     const dir = mediaDir();
@@ -848,8 +850,12 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
 
   // Crédits du compte OpenRouter (usage, limite, restant, expiration) : lecture
   // mise en cache 60 s. Aucune clé dans la réponse, et aucun appel réseau sans
-  // clé exploitable. Ouverte en lecture, comme `/admin/settings`.
-  app.get('/admin/credits', async () => credits.get(false));
+  // clé exploitable. Ce sont des chiffres FINANCIERS du compte : la lecture est
+  // donc réservée à la boucle locale (403 sinon), exactement comme la relecture.
+  app.get('/admin/credits', async (req, reply) => {
+    if (!allowLocalOnly(req, reply)) return;
+    return credits.get(false);
+  });
 
   // Relecture forcée (action « Rafraîchir » de l'administration) : elle sort sur
   // le réseau, donc boucle locale uniquement.
@@ -858,14 +864,14 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     return credits.get(true);
   });
 
-  // Version minimale pour la page principale : de quoi afficher l'avertissement
-  // discret de crédit presque épuisé, sans exposer les détails du compte.
+  // Version minimale pour la page principale : la page n'utilise QUE
+  // `warning` (avertissement discret de crédit presque épuisé). On ne divulgue
+  // donc AUCUN montant à un pair du réseau local : au plus un booléen.
   app.get('/local/credits', async () => {
     const snapshot = await credits.get(false);
     return {
       configured: snapshot.configured,
       ok: snapshot.ok,
-      ...(snapshot.limit_remaining !== undefined ? { limit_remaining: snapshot.limit_remaining } : {}),
       warning: snapshot.warning,
     };
   });
