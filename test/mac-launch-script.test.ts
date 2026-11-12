@@ -203,10 +203,17 @@ test('correctifs macOS : Homebrew en direct, PATH complété, lecture JSON, viva
   assert.match(code, /brew "\$@" 2>&1 \| while IFS= read -r line/, 'la sortie de brew doit défiler en direct');
   assert.ok(!/out="\$\(brew /.test(code), 'la sortie de brew ne doit PAS être capturée en bloc (lanceur muet)');
 
-  // B. PATH : dossiers Homebrew des deux architectures, complétés sans perte.
+  // B. PATH : dossiers Homebrew des deux architectures ; on NE touche au PATH que
+  // si un outil manque, et toujours EN FIN (un outil déjà présent garde la priorité).
   assert.ok(content.includes('/opt/homebrew/bin'), 'le dossier Apple Silicon doit être connu');
   assert.ok(content.includes('/usr/local/bin'), 'le dossier Intel doit être connu');
-  assert.match(code, /PATH="\$new:\$PATH"/, 'le PATH existant doit être conservé (ajout en tête)');
+  assert.match(code, /PATH="\$PATH:\$new"/, 'le complément doit être ajouté EN FIN de PATH');
+  assert.ok(!/PATH="\$new:\$PATH"/.test(code), 'jamais de préfixage en tête (la priorité de l’utilisateur est préservée)');
+  assert.match(
+    code,
+    /if command_available node && command_available ffmpeg && command_available ffprobe; then/,
+    'ne pas toucher au PATH quand les trois outils sont déjà trouvables',
+  );
   // Appelé après CHAQUE installation Homebrew, puis revérifié.
   assert.equal((code.match(/refresh_path$/gm) ?? []).length >= 3, true, 'refresh_path doit être appelé au démarrage et après chaque installation');
   assert.match(code, /refresh_path\n\s+node_info/, 'le Node.js installé doit être revérifié après le rafraîchissement');
@@ -221,6 +228,10 @@ test('correctifs macOS : Homebrew en direct, PATH complété, lecture JSON, viva
   const alive = sliceBetween(code, 'server_alive() {', 'stop_server() {');
   assert.ok(/SERVER_PORT/.test(alive), 'repli : la vivacité peut se juger sur le port');
   assert.ok(!/\$SERVER_PID/.test(alive), 'la vivacité ne doit PAS dépendre du tuyau `tee` (SERVER_PID)');
+
+  // B (2e passe). La clé du serveur est lue par parsing JSON, sans `grep`.
+  const keyFn = sliceBetween(code, 'key_configured_from_server() {', 'test_port_free() {');
+  assert.match(keyFn, /JSON\.parse/, 'la réponse /local/health doit être analysée comme du JSON');
 });
 
 test('les scripts de lancement macOS sont restitués en LF (jamais CRLF)', () => {
@@ -369,6 +380,28 @@ case ",\${CKR_FAKE_BUSY_PORTS:-}," in
 esac
 exit 1`,
 };
+
+// Doublures supplémentaires pour le test de PRIORITÉ du PATH.
+// `node` ANCIEN (16) rangé dans le dossier « Homebrew » : il ne doit JAMAIS être
+// choisi si un node plus récent est déjà dans le PATH.
+const OLD_NODE_FAKE = `log "node16 $*"
+case "\${1:-}" in
+  --version) echo v16.20.2; exit 0 ;;
+  *) if [ -n "\${CKR_REAL_NODE:-}" ]; then exec "$CKR_REAL_NODE" "$@"; fi; exit 0 ;;
+esac`;
+// Deux ffmpeg identifiables : celui « déjà présent » et celui du dossier Homebrew.
+const EARLY_FFMPEG = `log "EARLY_FFMPEG $*"
+if [ "\${1:-}" = "-version" ]; then echo "ffmpeg version 6.1.1-early"; exit 0; fi
+last=''
+for a in "$@"; do last="$a"; done
+if [ -n "$last" ]; then echo mp3 > "$last"; fi
+exit 0`;
+const BREW_FFMPEG = `log "BREW_FFMPEG $*"
+if [ "\${1:-}" = "-version" ]; then echo "ffmpeg version 6.1.1-brew"; exit 0; fi
+last=''
+for a in "$@"; do last="$a"; done
+if [ -n "$last" ]; then echo mp3 > "$last"; fi
+exit 0`;
 
 function writeFake(binDir: string, name: string, body: string): void {
   const file = join(binDir, name);
@@ -759,15 +792,17 @@ function freePort(): Promise<number> {
 }
 
 /** Démarre un vrai serveur HTTP local qui répond à /local/health (aucune doublure). */
-function startHealthServer(port: number, keyOk: boolean) {
-  const body = JSON.stringify({
-    ffmpeg: { ok: true, version: '6.1.1-fake' },
-    ffprobe: { ok: true, version: '6.1.1-fake' },
-    openrouterKey: keyOk ? { ok: true } : { ok: false, reason: 'missing' },
-    mediaDir: '/tmp',
-    mediaDirExists: true,
-    uploadMaxMb: 2048,
-  });
+function startHealthServer(port: number, keyOk: boolean, rawBody?: string) {
+  const body =
+    rawBody ??
+    JSON.stringify({
+      ffmpeg: { ok: true, version: '6.1.1-fake' },
+      ffprobe: { ok: true, version: '6.1.1-fake' },
+      openrouterKey: keyOk ? { ok: true } : { ok: false, reason: 'missing' },
+      mediaDir: '/tmp',
+      mediaDirExists: true,
+      uploadMaxMb: 2048,
+    });
   const code = `const http=require('http');const port=Number(process.argv[1]);const body=${JSON.stringify(body)};http.createServer((req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end(body);}).listen(port,'127.0.0.1');`;
   const child = spawn(process.execPath, ['-e', code, String(port)], { stdio: 'ignore' });
   return child;
@@ -1046,6 +1081,80 @@ test('D. trap EXIT : un descendant resté vivant est arrêté à la sortie (jama
     const before = readFileSync(fx.heartbeat, 'utf8');
     await sleepMs(800);
     assert.equal(readFileSync(fx.heartbeat, 'utf8'), before, 'le descendant ne doit pas survivre à la sortie');
+  } finally {
+    server.kill();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// A (2e passe). PRIORITÉ du PATH : un outil déjà présent n'est jamais écrasé
+// ---------------------------------------------------------------------------
+
+test('A. un outil DÉJÀ présent garde la priorité : le PATH n’est pas touché du tout', { skip: skipNoBash }, () => {
+  const fx = makeFixture('path-priority');
+  // Scénario de la revue : un node ANCIEN rangé dans un dossier Homebrew, un node
+  // RÉCENT déjà dans le PATH (nvm/volta ou installation manuelle).
+  writeFake(fx.brewBin, 'node', OLD_NODE_FAKE);
+  const out = outputOf(runLaunch(fx, ['--check'], { env: { CKR_BREW_BIN_DIRS: toPosix(fx.brewBin) } }));
+
+  assert.match(out, /Node\.js 22\.14\.0/, 'le node déjà présent (récent) doit être utilisé');
+  assert.doesNotMatch(out, /trop ancien/, 'aucun faux diagnostic « trop ancien »');
+  assert.doesNotMatch(out, /16\.20\.2/, 'le node 16 du dossier Homebrew ne doit pas être choisi');
+  assert.ok(
+    !readLauncherLog(fx).includes('[PATH]'),
+    'le PATH ne doit pas être modifié quand les trois outils sont déjà trouvables',
+  );
+});
+
+test('A. si un outil MANQUE, les dossiers Homebrew sont ajoutés EN FIN de PATH', { skip: skipNoBash }, () => {
+  const fx = makeFixture('path-append', { omitFakes: ['ffprobe'] });
+  // `ffmpeg` déjà présent (en tête de PATH) et un autre, différent, dans le dossier
+  // Homebrew : c'est le premier qui doit être choisi.
+  writeFake(fx.binDir, 'ffmpeg', EARLY_FFMPEG);
+  writeFake(fx.brewBin, 'ffmpeg', BREW_FFMPEG);
+  writeFake(fx.brewBin, 'ffprobe', FAKES.ffprobe);
+  const r = runLaunch(fx, ['--install-only', '--no-browser'], { env: { CKR_BREW_BIN_DIRS: toPosix(fx.brewBin) } });
+  const out = outputOf(r);
+  assert.equal(r.status, 0, out);
+
+  assert.match(readLauncherLog(fx), /\[PATH\].*EN FIN/, 'le complément doit être journalisé comme ajouté en fin de PATH');
+  const log = readFakeLog(fx);
+  assert.match(log, /EARLY_FFMPEG/, 'un ffmpeg déjà présent garde la priorité');
+  assert.doesNotMatch(log, /BREW_FFMPEG/, 'le ffmpeg du dossier Homebrew ne doit pas être choisi');
+  // Corollaire : l'outil réellement absent (ffprobe) est bien retrouvé.
+  assert.match(log, /^ffprobe /m, 'ffprobe, manquant, doit être retrouvé par le complément');
+});
+
+// ---------------------------------------------------------------------------
+// B (2e passe). La clé du serveur est lue par parsing JSON, pas par `grep`
+// ---------------------------------------------------------------------------
+
+test('B. la clé du serveur est lue par parsing JSON : une chaîne « leurre » ne trompe pas', { skip: skipNoBash }, async () => {
+  const port = await freePort();
+  // Le champ `note` contient, sous forme de CHAÎNE, exactement le motif que
+  // l'ancienne recherche textuelle prenait pour une clé configurée.
+  const body = JSON.stringify({
+    ffmpeg: { ok: true, version: '6.1.1-fake' },
+    ffprobe: { ok: true, version: '6.1.1-fake' },
+    openrouterKey: { ok: false, reason: 'missing' },
+    note: '"openrouterKey":{"ok":true}',
+    mediaDir: '/tmp',
+    mediaDirExists: true,
+    uploadMaxMb: 2048,
+  });
+  const server = startHealthServer(port, false, body);
+  try {
+    await waitForHealth(port);
+    const fx = makeFixture('key-decoy');
+    const r = runLaunch(fx, ['--port', String(port)], { env: { CKR_FAKE_NPM_START_SLEEP: '0.5' }, timeout: 60_000 });
+    const out = outputOf(r);
+    assert.equal(r.status, 0, out);
+    assert.match(out, new RegExp(`127\\.0\\.0\\.1:${port}/admin`), 'sans clé réelle, /admin doit être ouvert');
+    assert.match(
+      readFakeLog(fx),
+      new RegExp(`^open http://127\\.0\\.0\\.1:${port}/admin$`, 'm'),
+      'le navigateur doit viser /admin malgré le leurre',
+    );
   } finally {
     server.kill();
   }

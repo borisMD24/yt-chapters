@@ -285,14 +285,22 @@ brew_bin_dirs() {
   fi
 }
 
-# ÉQUIVALENT macOS de la relecture du registre côté Windows : après une
-# installation Homebrew — et dès le démarrage — le binaire peut exister sans être
-# dans le PATH de la session (cas classique du double-clic Finder, qui n'hérite
-# pas du PATH d'un Terminal configuré). On AJOUTE ces dossiers SANS PERDRE
-# l'existant (ils passent en tête, comme les entrées Machine/User côté Windows),
-# puis l'appelant revérifie la présence des outils.
+# ÉQUIVALENT macOS de la relecture du registre côté Windows, AVEC la même
+# prudence : on ne touche JAMAIS à un outil déjà trouvable.
+#
+#   - si Node, ffmpeg ET ffprobe sont déjà présents dans le PATH, on ne fait RIEN
+#     (un outil déjà présent — par exemple un node géré par nvm/volta — a déjà été
+#     choisi par l'utilisateur : il garde la priorité, et on ne risque pas de
+#     diagnostiquer à tort une version « trop ancienne » à cause d'un node plus
+#     vieux rangé dans un dossier Homebrew) ;
+#   - si au moins un outil MANQUE, on complète le PATH avec les dossiers Homebrew
+#     EN FIN de PATH (jamais en tête : un outil déjà présent garde la priorité),
+#     puis l'appelant revérifie la présence des outils.
 refresh_path() {
   local list dir rest new
+  if command_available node && command_available ffmpeg && command_available ffprobe; then
+    return 0
+  fi
   list="$(brew_bin_dirs)"
   new=''
   rest="$list"
@@ -310,9 +318,9 @@ refresh_path() {
     esac
   done
   if [ -n "$new" ]; then
-    PATH="$new:$PATH"
+    PATH="$PATH:$new"
     export PATH
-    log_line 'PATH' "PATH de la session complété (Homebrew) : $new"
+    log_line 'PATH' "PATH de la session complété (Homebrew, EN FIN) : $new"
   fi
   return 0
 }
@@ -449,10 +457,20 @@ key_configured_from_env() {
 }
 
 # Avec un serveur qui tourne : la source de vérité est le SERVEUR lui-même
-# (`/local/health`), donc la vraie résolution base + `.env`.
+# (`/local/health`), donc la vraie résolution base + `.env`. La réponse est
+# PARCÉE comme du JSON (comme l'horodatage) : une recherche textuelle se laisserait
+# tromper par la chaîne d'un AUTRE champ qui contiendrait le motif
+# `"openrouterKey":{"ok":true}` — et la page `/` serait ouverte au lieu de `/admin`.
 key_configured_from_server() {
   local port="$1" body
   body="$(curl -fsS --max-time 3 "http://127.0.0.1:$port/local/health" 2>/dev/null)" || return 1
+  if command_available node; then
+    node -e 'try{const h=JSON.parse(process.argv[1]);process.exit(h&&h.openrouterKey&&h.openrouterKey.ok===true?0:1);}catch{process.exit(1);}' "$body" >/dev/null 2>&1
+    return $?
+  fi
+  # Repli SANS Node : recherche ciblée, suffisante pour la réponse que NOUS
+  # produisons (clé `openrouterKey` de premier niveau, valeur booléenne). Sans
+  # Node, l'application ne peut de toute façon pas être démarrée.
   printf '%s' "$body" | grep -Eq '"openrouterKey"[[:space:]]*:[[:space:]]*\{[[:space:]]*"ok"[[:space:]]*:[[:space:]]*true'
 }
 
