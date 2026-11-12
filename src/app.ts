@@ -36,6 +36,13 @@ import {
   resolveMediaFile,
 } from './media-files';
 import {
+  AnalysisError,
+  ANALYSIS_FAILED_MESSAGE,
+  createAnalysisService,
+  parseAnalysisQuery,
+  type AnalysisRunner,
+} from './media-analysis';
+import {
   checkTools,
   defaultToolChecker,
   MEDIA_UNREADABLE_MESSAGE,
@@ -114,6 +121,12 @@ export type AppOptions = {
   creditsFetch?: typeof fetch;
   /** Durée de cache des crédits en millisecondes (tests). */
   creditsTtlMs?: number;
+  /** Lanceur ffmpeg injectable pour l'analyse de forme d'onde (tests). */
+  analysisRunner?: AnalysisRunner;
+  /** TTL du cache d'analyse en millisecondes (tests). */
+  analysisTtlMs?: number;
+  /** Taille maximale du cache d'analyse (tests). */
+  analysisMaxEntries?: number;
 };
 
 const idParam = z.object({ id: z.string().min(1) });
@@ -214,6 +227,16 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   const credits =
     options.credits ??
     createCreditsProvider({ fetchImpl: options.creditsFetch, ttlMs: options.creditsTtlMs });
+
+  // Analyse de forme d'onde (pics + silences) : un service par application,
+  // cache mémoire par identifiant + fenêtre quantifiée (TTL, taille plafonnée).
+  // Le lanceur ffmpeg est injectable pour les tests (jamais le réseau, jamais de
+  // vrai ffmpeg nécessaire).
+  const analysis = createAnalysisService({
+    runner: options.analysisRunner,
+    ttlMs: options.analysisTtlMs,
+    maxEntries: options.analysisMaxEntries,
+  });
 
   // Envoi de fichier : le corps brut (flux) est remis tel quel à la route, qui
   // l'écrit au fur et à mesure. Aucun tamponnage mémoire, donc aucune limite
@@ -491,6 +514,33 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     return [uploadCacheDir(), mediaDir()];
   }
 
+  /** Résolution d'un identifiant média en fichier servable (succès ou refus typé). */
+  type ServableMedia =
+    | { ok: true; path: string; ext: string; size: number }
+    | { ok: false; status: 403 | 404; message: string };
+
+  /**
+   * Résout un identifiant média vers un fichier AUTORISÉ à être servi, par
+   * EXACTEMENT les mêmes règles que `/media/:id` : identifiant seul (jamais un
+   * chemin client), confinement réel aux racines (cache d'envoi + MEDIA_DIR) et
+   * refus d'un envoi incomplet. Partage ce chemin unique entre le streaming et
+   * l'analyse de forme d'onde.
+   */
+  async function resolveServableMedia(id: string): Promise<ServableMedia> {
+    const candidate = await mediaCandidatePath(id);
+    const resolved = candidate ? await resolveMediaFile(candidate, mediaRoots()) : null;
+    // Un envoi INCOMPLET (`ckr-part-*`) n'est jamais servi, même si une ligne
+    // en base pointait dessus : il est tronqué par définition.
+    if (resolved && resolved.ok && isPartialUploadName(basename(resolved.path))) {
+      return { ok: false, status: 404, message: MEDIA_NOT_FOUND_MESSAGE };
+    }
+    if (!resolved || !resolved.ok) {
+      if (!resolved) return { ok: false, status: 404, message: MEDIA_NOT_FOUND_MESSAGE };
+      return { ok: false, status: resolved.status, message: resolved.message };
+    }
+    return { ok: true, path: resolved.path, ext: resolved.ext, size: resolved.size };
+  }
+
   /**
    * `GET|HEAD /media/:id` : sert le média avec support des plages.
    *  - `Accept-Ranges: bytes`, `Content-Length`, `Content-Type` ;
@@ -506,19 +556,10 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     url: '/media/:id',
     handler: async (req, reply) => {
       const { id } = idParam.parse(req.params);
-      const candidate = await mediaCandidatePath(id);
-      const resolved = candidate ? await resolveMediaFile(candidate, mediaRoots()) : null;
-      // Un envoi INCOMPLET (`ckr-part-*`) n'est jamais servi, même si une ligne
-      // en base pointait dessus : il est tronqué par définition.
-      if (resolved && resolved.ok && isPartialUploadName(basename(resolved.path))) {
-        return reply.code(404).send({ error: MEDIA_NOT_FOUND_MESSAGE });
-      }
-      if (!resolved || !resolved.ok) {
-        if (!resolved) return reply.code(404).send({ error: MEDIA_NOT_FOUND_MESSAGE });
-        return reply.code(resolved.status).send({ error: resolved.message });
-      }
+      const media = await resolveServableMedia(id);
+      if (!media.ok) return reply.code(media.status).send({ error: media.message });
 
-      const { path, ext, size } = resolved;
+      const { path, ext, size } = media;
       const isHead = req.method === 'HEAD';
       const range = parseSingleRange(req.headers.range as string | undefined, size);
 
@@ -548,6 +589,35 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         .header('content-length', size);
       return isHead ? reply.send() : reply.send(createReadStream(path));
     },
+  });
+
+  /**
+   * `GET /media/:id/analysis?from=&to=` : analyse d'une FENÊTRE (≤ 120 s) du
+   * média — pics pour dessiner la forme d'onde et silences pour l'accrochage.
+   *  - identifiant résolu et confiné EXACTEMENT comme `/media/:id` (404/403 FR) ;
+   *  - fenêtre invalide (négative, inversée, > 120 s, non finie) → 400 FR ;
+   *  - `to` au-delà de la durée du média → tronquée, pas d'erreur ;
+   *  - un seul passage ffmpeg, résultat mis en cache (identifiant + fenêtre).
+   */
+  app.get('/media/:id/analysis', async (req, reply) => {
+    const { id } = idParam.parse(req.params);
+    const window = parseAnalysisQuery(req.query);
+    if (!window.ok) return reply.code(400).send({ error: window.message });
+
+    const media = await resolveServableMedia(id);
+    if (!media.ok) return reply.code(media.status).send({ error: media.message });
+
+    // Durée connue en base, utile seulement si ffmpeg ne l'annonce pas.
+    const known =
+      db.select({ durationSec: videos.durationSec }).from(videos).where(eq(videos.id, id)).get()?.durationSec ?? 0;
+
+    try {
+      return await analysis.analyze(id, media.path, window.from, window.to, known);
+    } catch (err) {
+      if (err instanceof AnalysisError) return reply.code(err.status).send({ error: err.message });
+      app.log.error(err);
+      return reply.code(500).send({ error: ANALYSIS_FAILED_MESSAGE });
+    }
   });
 
   // ---------- pipeline de job (local) ----------

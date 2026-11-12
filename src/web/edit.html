@@ -135,7 +135,7 @@
       /* ---------- chronologie ---------- */
       .timeline {
         position: relative;
-        height: 74px;
+        height: 96px;
         margin: 6px 0 4px;
         border-radius: var(--radius-sm);
         background: linear-gradient(to bottom, var(--surface-2), #f2ede4);
@@ -356,6 +356,102 @@
         color: var(--muted);
         font-size: 0.9rem;
       }
+
+      /* ---------- zoom, forme d'onde, accrochage, boucle ---------- */
+      .waveform {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .loop-marks {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      .loop-mark {
+        position: absolute;
+        top: 46px;
+        width: 12px;
+        height: 16px;
+        margin-left: -6px;
+        border: 1px solid var(--ok);
+        background: var(--ok-soft);
+        border-radius: 2px;
+      }
+      .loop-mark::after {
+        content: attr(data-tag);
+        position: absolute;
+        top: -15px;
+        left: 50%;
+        transform: translateX(-50%);
+        font: 700 0.62rem/1 var(--mono);
+        color: var(--ok);
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 16px;
+        align-items: center;
+        margin: 4px 0 0;
+      }
+      .controls label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      .controls select {
+        font: inherit;
+        color: var(--ink);
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+        padding: 6px 8px;
+        min-height: 40px;
+      }
+      .controls input[type='checkbox'] {
+        width: 20px;
+        height: 20px;
+      }
+      .hint {
+        margin: 8px 0 0;
+        font-size: 0.86rem;
+        color: var(--muted);
+        min-height: 1.2em;
+      }
+      .hint.warn-text {
+        color: var(--warn);
+        font-weight: 600;
+      }
+      .keys {
+        columns: 2;
+        margin: 0;
+        padding-left: 20px;
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      .keys li {
+        margin: 0 0 5px;
+        break-inside: avoid;
+      }
+      .keys kbd {
+        font-family: var(--mono);
+        font-size: 0.82rem;
+        background: var(--surface-2);
+        border: 1px solid var(--border-strong);
+        border-bottom-width: 2px;
+        border-radius: 4px;
+        padding: 1px 5px;
+        color: var(--ink);
+      }
+      @media (max-width: 620px) {
+        .keys {
+          columns: 1;
+        }
+      }
       @media (max-width: 420px) {
         .btn {
           width: 100%;
@@ -365,6 +461,9 @@
         }
         .timeline {
           height: 66px;
+        }
+        .loop-mark {
+          top: 36px;
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -405,14 +504,46 @@
         <h2 id="t-timeline"><span class="stepnum" aria-hidden="true">2</span> Déplacer une borne</h2>
         <div class="card">
           <div id="timeline" class="timeline" role="group" aria-label="Chronologie des chapitres">
+            <canvas id="waveform" class="waveform" aria-hidden="true"></canvas>
             <div id="ticks" class="ticks" aria-hidden="true"></div>
             <div id="markers" class="markers"></div>
+            <div id="loop-marks" class="loop-marks" aria-hidden="true"></div>
             <div id="playhead" class="playhead" aria-hidden="true"></div>
           </div>
+          <p id="offscreen-info" class="hint warn-text" role="status" hidden></p>
           <p id="selected-info" class="muted" role="status" style="margin: 10px 0 14px">
             Aucune borne sélectionnée.
           </p>
-          <div class="row-actions">
+          <div class="controls">
+            <label>
+              Fenêtre visible
+              <select id="zoom" aria-label="Fenêtre de temps visible">
+                <option value="all">Tout voir</option>
+                <option value="600">10 minutes</option>
+                <option value="120">2 minutes</option>
+                <option value="30">30 secondes</option>
+                <option value="5">5 secondes</option>
+              </select>
+            </label>
+            <button id="show-all" class="btn btn-secondary btn-small" type="button">Tout voir</button>
+            <label><input id="snap-toggle" type="checkbox" checked /> Accrocher aux silences</label>
+            <button id="loop-ab" class="btn btn-secondary btn-small" type="button" aria-pressed="false">
+              Boucle A/B (L)
+            </button>
+            <label>
+              Vitesse
+              <select id="speed" aria-label="Vitesse de lecture">
+                <option value="0.5">0,5×</option>
+                <option value="1" selected>1×</option>
+                <option value="1.5">1,5×</option>
+                <option value="2">2×</option>
+              </select>
+            </label>
+          </div>
+          <p id="wave-status" class="hint"></p>
+          <p id="snap-info" class="hint" hidden></p>
+          <p id="loop-info" class="hint" hidden></p>
+          <div class="row-actions" style="margin-top: 12px">
             <button id="preview-play" class="btn btn-secondary btn-small" type="button">Lecture / pause</button>
             <button id="nudge-back-5" class="btn btn-secondary btn-small" type="button">− 5 s</button>
             <button id="nudge-back-1" class="btn btn-secondary btn-small" type="button">− 1 s</button>
@@ -422,8 +553,9 @@
             <button id="add-chapter" class="btn btn-secondary btn-small" type="button">Ajouter un chapitre ici</button>
           </div>
           <p class="help">
-            Clavier : Tabulation pour atteindre une borne, Flèches gauche/droite pour la déplacer (Maj = 5 s), Entrée
-            pour la sélectionner, Échap pour la désélectionner. Cliquer une borne la lit quelques secondes.
+            Clavier : Tabulation pour atteindre une borne, Flèches gauche/droite pour la déplacer (Maj = 5 s, Alt =
+            accrocher à un silence), Entrée pour la sélectionner, Échap pour la désélectionner. Cliquer une borne la lit
+            quelques secondes. Glissez sur la règle pour vous déplacer dans le temps.
           </p>
         </div>
       </section>
@@ -456,6 +588,27 @@
         <pre id="export-text" class="output" tabindex="0" aria-label="Liste des chapitres à copier"></pre>
       </section>
 
+      <section class="step" aria-labelledby="t-keys">
+        <h2 id="t-keys"><span class="stepnum" aria-hidden="true">5</span> Raccourcis clavier</h2>
+        <div class="card">
+          <ul class="keys">
+            <li><kbd>Tab</kbd> : passer d'un réglage au suivant</li>
+            <li><kbd>←</kbd> / <kbd>→</kbd> : déplacer la borne de 1 s</li>
+            <li><kbd>Maj</kbd> + <kbd>←</kbd>/<kbd>→</kbd> : déplacer de 5 s</li>
+            <li><kbd>Alt</kbd> + <kbd>←</kbd>/<kbd>→</kbd> : déplacer en s'accrochant à un silence</li>
+            <li><kbd>Entrée</kbd> : sélectionner la borne et en écouter un extrait</li>
+            <li><kbd>Échap</kbd> : désélectionner (arrête aussi la boucle A/B)</li>
+            <li><kbd>L</kbd> : activer / arrêter la boucle d'écoute A/B</li>
+            <li><kbd>Espace</kbd> : lecture / pause</li>
+            <li>Glisser sur la règle : se déplacer dans le temps</li>
+          </ul>
+          <p class="help">
+            Le zoom, la forme d'onde et l'accrochage sont optionnels : tout l'éditeur reste utilisable au clavier seul,
+            sans souris, et sans aucune ressource externe.
+          </p>
+        </div>
+      </section>
+
       <footer>
         <p class="muted" style="margin: 0"><a href="/">Retour à l'outil de chapitrage</a></p>
       </footer>
@@ -470,6 +623,14 @@
         var PREVIEW_SEC = 8;
         /** Écart minimal recommandé entre deux chapitres (règle YouTube). */
         var MIN_GAP_SEC = 10;
+        /** Rayon d'accrochage au début de silence le plus proche (secondes). */
+        var SNAP_RADIUS_SEC = 1.5;
+        /** Marge (secondes) de part et d'autre de la borne pour la boucle A/B. */
+        var LOOP_MARGIN_SEC = 4;
+        /** Fenêtre visible maximale pour laquelle la forme d'onde est demandée. */
+        var WAVE_MAX_SPAN_SEC = 120;
+        /** Anti-rebond du dessin de la forme d'onde (millisecondes). */
+        var WAVE_DEBOUNCE_MS = 250;
 
         var state = {
           videoId: '',
@@ -481,6 +642,17 @@
           selected: null,
           deleted: [],
           original: {},
+          // Fenêtre de temps visible (zoom / défilement) : [start, end] en secondes.
+          view: { start: 0, end: 0 },
+          // Débuts de silence (temps absolu) fournis par l'analyse de la fenêtre.
+          silences: [],
+          snapEnabled: true,
+          snapped: null,
+          loop: null,
+          speed: 1,
+          waveTimer: null,
+          waveSeq: 0,
+          pan: null,
         };
 
         var els = {
@@ -492,9 +664,20 @@
           mediaWarnText: $('media-warn-text'),
           mediaMeta: $('media-meta'),
           timeline: $('timeline'),
+          waveform: $('waveform'),
           ticks: $('ticks'),
           markers: $('markers'),
+          loopMarks: $('loop-marks'),
           playhead: $('playhead'),
+          offscreen: $('offscreen-info'),
+          waveStatus: $('wave-status'),
+          snapInfo: $('snap-info'),
+          loopInfo: $('loop-info'),
+          zoom: $('zoom'),
+          showAll: $('show-all'),
+          snapToggle: $('snap-toggle'),
+          loopBtn: $('loop-ab'),
+          speed: $('speed'),
           selectedInfo: $('selected-info'),
           list: $('chapter-list'),
           status: $('status'),
@@ -583,6 +766,334 @@
           return 900;
         }
 
+        // ---------- fenêtre visible (zoom / défilement) ----------
+
+        function viewLen() {
+          return Math.max(0.0001, state.view.end - state.view.start);
+        }
+
+        /** Vrai si une fenêtre de temps restreinte est active (sinon : tout le média). */
+        function hasView() {
+          var total = duration();
+          return total > 0 && state.view.end > state.view.start;
+        }
+
+        /** Position (en %) d'un temps absolu dans la fenêtre visible. */
+        function secToPct(sec) {
+          var total = duration();
+          if (!hasView()) return total > 0 ? (sec / total) * 100 : 0;
+          return ((sec - state.view.start) / viewLen()) * 100;
+        }
+
+        /** Vrai si le temps absolu tombe dans la fenêtre visible (marge nulle). */
+        function inView(sec) {
+          if (!hasView()) return true;
+          return sec >= state.view.start - 1e-9 && sec <= state.view.end + 1e-9;
+        }
+
+        /** Fixe la fenêtre visible (bornée au média) et redessine. */
+        function setView(start, end) {
+          var total = duration();
+          if (!(total > 0)) {
+            state.view = { start: 0, end: 0 };
+            renderTimeline();
+            return;
+          }
+          var len = Math.min(end - start, total);
+          if (!(len > 0)) len = total;
+          var s = Math.max(0, Math.min(start, total - len));
+          state.view = { start: s, end: s + len };
+          renderTimeline();
+          scheduleWave();
+        }
+
+        /** Réaffiche tout le média. */
+        function goFullView() {
+          setView(0, duration());
+        }
+
+        /** Zoome sur une durée (secondes), centrée sur la sélection ou la lecture. */
+        function zoomToSpan(spanSec) {
+          var total = duration();
+          if (!(total > 0)) return;
+          var len = Math.min(spanSec, total);
+          var anchor = currentTime();
+          if (state.selected != null && state.chapters[state.selected]) anchor = state.chapters[state.selected].startSec;
+          var start = Math.max(0, Math.min(anchor - len / 2, total - len));
+          setView(start, start + len);
+        }
+
+        // ---------- forme d'onde ----------
+
+        function setWaveStatus(text, warn) {
+          els.waveStatus.textContent = text || '';
+          els.waveStatus.className = 'hint' + (warn ? ' warn-text' : '');
+        }
+
+        function waveContext() {
+          var cv = els.waveform;
+          if (!cv || typeof cv.getContext !== 'function') return null;
+          var ctx = cv.getContext('2d');
+          return ctx && typeof ctx.clearRect === 'function' ? { cv: cv, ctx: ctx } : null;
+        }
+
+        function clearWaveform() {
+          var c = waveContext();
+          if (c) c.ctx.clearRect(0, 0, c.cv.width || 0, c.cv.height || 0);
+        }
+
+        /** Programme (anti-rebond) le chargement de la forme d'onde visible. */
+        function scheduleWave() {
+          if (typeof setTimeout !== 'function') return;
+          if (state.waveTimer != null && typeof clearTimeout === 'function') clearTimeout(state.waveTimer);
+          state.waveTimer = setTimeout(fetchWaveform, WAVE_DEBOUNCE_MS);
+        }
+
+        /** Charge (ou non) la forme d'onde de la fenêtre visible, en dégradant proprement. */
+        function fetchWaveform() {
+          if (!state.mediaUrl || !hasView()) {
+            clearWaveform();
+            setWaveStatus('');
+            return;
+          }
+          if (viewLen() > WAVE_MAX_SPAN_SEC) {
+            clearWaveform();
+            setWaveStatus('Zoomez à 2 minutes ou moins pour afficher la forme d’onde.');
+            return;
+          }
+          var from = Math.round(state.view.start * 100) / 100;
+          var to = Math.round(state.view.end * 100) / 100;
+          var seq = ++state.waveSeq;
+          setWaveStatus('Analyse de la forme d’onde en cours…');
+          fetch(
+            '/media/' + encodeURIComponent(state.videoId) + '/analysis?from=' + from + '&to=' + to,
+          )
+            .then(readJson)
+            .then(function (res) {
+              if (seq !== state.waveSeq) return; // une demande plus récente a pris la main
+              if (!res.ok) {
+                clearWaveform();
+                setWaveStatus('Forme d’onde indisponible : le reste de l’éditeur reste utilisable.', true);
+                return;
+              }
+              applyAnalysis(res.data || {});
+            })
+            .catch(function () {
+              if (seq !== state.waveSeq) return;
+              clearWaveform();
+              setWaveStatus('Forme d’onde indisponible : le reste de l’éditeur reste utilisable.', true);
+            });
+        }
+
+        function applyAnalysis(data) {
+          state.silences = Array.isArray(data.silences)
+            ? data.silences
+                .map(function (s) {
+                  return { startSec: Number(s && s.startSec) || 0, endSec: Number(s && s.endSec) || 0 };
+                })
+                .filter(function (s) {
+                  return isFinite(s.startSec);
+                })
+            : [];
+          var peaks = Array.isArray(data.peaks) ? data.peaks : [];
+          paintPeaks(peaks);
+          setWaveStatus(peaks.length ? '' : 'Aucune forme d’onde pour cette portion.');
+        }
+
+        function paintPeaks(peaks) {
+          var c = waveContext();
+          if (!c) return;
+          if (!peaks.length) {
+            clearWaveform();
+            return;
+          }
+          var w = c.cv.width || c.cv.clientWidth || 600;
+          var h = c.cv.height || c.cv.clientHeight || 60;
+          var top = 6;
+          var bottom = Math.max(top + 4, h - 24);
+          var mid = (top + bottom) / 2;
+          var half = (bottom - top) / 2;
+          c.ctx.clearRect(0, 0, w, h);
+          c.ctx.fillStyle = '#b3341f';
+          for (var i = 0; i < peaks.length; i++) {
+            var mn = Number(peaks[i][0]) || 0;
+            var mx = Number(peaks[i][1]) || 0;
+            var x = (i / peaks.length) * w;
+            var y1 = mid - mx * half;
+            var y2 = mid - mn * half;
+            if (y2 - y1 < 1) y2 = y1 + 1;
+            c.ctx.fillRect(Math.floor(x), Math.floor(y1), 1, Math.ceil(y2 - y1));
+          }
+        }
+
+        // ---------- accrochage aux silences ----------
+
+        /** Début de silence le plus proche de `sec` dans le rayon, sinon `null`. */
+        function nearestSilenceStart(sec) {
+          var best = null;
+          var bestDist = SNAP_RADIUS_SEC;
+          for (var i = 0; i < state.silences.length; i++) {
+            var s = state.silences[i].startSec;
+            var d = Math.abs(s - sec);
+            if (d <= bestDist) {
+              bestDist = d;
+              best = s;
+            }
+          }
+          return best;
+        }
+
+        /** Accroche `sec` au début de silence le plus proche si l'accrochage est actif. */
+        function maybeSnap(sec) {
+          if (!state.snapEnabled) {
+            state.snapped = null;
+            renderSnapInfo(false, null);
+            return sec;
+          }
+          var hit = nearestSilenceStart(sec);
+          if (hit == null) {
+            state.snapped = null;
+            renderSnapInfo(false, null);
+            return sec;
+          }
+          state.snapped = hit;
+          renderSnapInfo(true, hit);
+          return Math.round(hit);
+        }
+
+        function renderSnapInfo(snapped, at) {
+          if (snapped && at != null) {
+            els.snapInfo.hidden = false;
+            els.snapInfo.textContent = 'Accroché au début de silence le plus proche : ' + fmtTs(at) + '.';
+          } else {
+            els.snapInfo.hidden = true;
+            els.snapInfo.textContent = '';
+          }
+        }
+
+        // ---------- boucle d'écoute A/B ----------
+
+        /** Bornes A/B autour de la borne : ± 4 s, ou bornes de silence encadrantes proches. */
+        function loopBounds(index) {
+          var base = state.chapters[index].startSec;
+          var a = Math.max(0, base - LOOP_MARGIN_SEC);
+          var b = base + LOOP_MARGIN_SEC;
+          var prev = null;
+          var next = null;
+          for (var i = 0; i < state.silences.length; i++) {
+            var s = state.silences[i].startSec;
+            if (s < base && (prev === null || s > prev)) prev = s;
+            if (s > base && (next === null || s < next)) next = s;
+          }
+          if (prev !== null && base - prev <= LOOP_MARGIN_SEC * 2) a = prev;
+          if (next !== null && next - base <= LOOP_MARGIN_SEC * 2) b = next;
+          if (!(b > a)) b = a + LOOP_MARGIN_SEC;
+          return { a: Math.max(0, a), b: b };
+        }
+
+        function renderLoopMarks() {
+          var html = '';
+          if (state.loop) {
+            var pairs = [
+              ['A', state.loop.a],
+              ['B', state.loop.b],
+            ];
+            for (var i = 0; i < pairs.length; i++) {
+              if (!inView(pairs[i][1])) continue;
+              html +=
+                '<span class="loop-mark" data-tag="' +
+                pairs[i][0] +
+                '" style="left:' +
+                secToPct(pairs[i][1]).toFixed(3) +
+                '%"></span>';
+            }
+          }
+          els.loopMarks.innerHTML = html;
+        }
+
+        function renderLoopInfo() {
+          els.loopBtn.setAttribute('aria-pressed', state.loop ? 'true' : 'false');
+          if (state.loop) {
+            els.loopInfo.hidden = false;
+            els.loopInfo.textContent =
+              'Boucle A/B active : ' + fmtTs(state.loop.a) + ' → ' + fmtTs(state.loop.b) + ' (Échap ou « L » pour arrêter).';
+          } else {
+            els.loopInfo.hidden = true;
+            els.loopInfo.textContent = '';
+          }
+        }
+
+        function clearLoop() {
+          state.loop = null;
+          renderLoopMarks();
+          renderLoopInfo();
+        }
+
+        function toggleLoop() {
+          if (state.loop) {
+            clearLoop();
+            setStatus('Boucle d’écoute arrêtée.');
+            return;
+          }
+          var index = requireSelection();
+          if (index == null) return;
+          state.loop = loopBounds(index);
+          renderLoopMarks();
+          renderLoopInfo();
+          seekToLoopStart();
+          startPlayback();
+          setStatus('Boucle d’écoute sur ' + fmtTs(state.loop.a) + ' → ' + fmtTs(state.loop.b) + '.');
+        }
+
+        function seekToLoopStart() {
+          var el = mediaEl();
+          if (!el || !state.loop) return;
+          try {
+            el.currentTime = state.loop.a;
+          } catch (e) {
+            /* média non chargé : le reste reste utilisable */
+          }
+        }
+
+        function startPlayback() {
+          var el = mediaEl();
+          if (!el || typeof el.play !== 'function') return;
+          var p = el.play();
+          if (p && typeof p.catch === 'function') p.catch(function () {});
+        }
+
+        /** Ramelette la lecture à A quand elle sort de la boucle (garde-fou). */
+        function enforceLoop() {
+          if (!state.loop) return;
+          var el = mediaEl();
+          if (!el) return;
+          var t = currentTime();
+          if (t < state.loop.a - 0.05 || t >= state.loop.b) {
+            try {
+              el.currentTime = state.loop.a;
+            } catch (e) {
+              /* on ignore : la prochaine mise à jour réessaiera */
+            }
+          }
+        }
+
+        /** Défile la fenêtre pour garder la tête de lecture visible pendant la lecture. */
+        function autoFollow() {
+          if (!hasView()) return;
+          var total = duration();
+          var len = viewLen();
+          if (len >= total - 1e-6) return;
+          var el = mediaEl();
+          if (!el || el.paused !== false) return;
+          var t = currentTime();
+          if (t < state.view.start || t > state.view.end) {
+            var s = Math.max(0, Math.min(t - len / 2, total - len));
+            state.view = { start: s, end: s + len };
+            renderTimeline();
+            scheduleWave();
+          }
+        }
+
         // ---------- rendu ----------
 
         function markerLabel(chapter, index) {
@@ -595,30 +1106,30 @@
             els.ticks.innerHTML = '';
             return;
           }
-          var step = tickStepSec(total);
+          var len = hasView() ? viewLen() : total;
+          var start = hasView() ? state.view.start : 0;
+          var end = hasView() ? state.view.end : total;
+          var step = tickStepSec(len);
+          var first = Math.max(0, Math.floor(start / step) * step);
           var html = '';
-          for (var t = 0; t <= total; t += step) {
-            html +=
-              '<span class="tick" style="left:' +
-              ((t / total) * 100).toFixed(3) +
-              '%"><i></i>' +
-              fmtTs(t) +
-              '</span>';
+          for (var t = first; t <= end + 1e-6; t += step) {
+            if (t < start - 1e-6) continue;
+            var left = ((t - start) / len) * 100;
+            html += '<span class="tick" style="left:' + left.toFixed(3) + '%"><i></i>' + fmtTs(t) + '</span>';
           }
           els.ticks.innerHTML = html;
         }
 
         function renderMarkers() {
-          var total = duration();
           var html = '';
           for (var i = 0; i < state.chapters.length; i++) {
             var c = state.chapters[i];
-            var left = total > 0 ? (c.startSec / total) * 100 : 0;
+            if (!inView(c.startSec)) continue;
             html +=
               '<button type="button" class="marker" data-index="' +
               i +
               '" style="left:' +
-              left.toFixed(3) +
+              secToPct(c.startSec).toFixed(3) +
               '%" aria-pressed="' +
               (state.selected === i ? 'true' : 'false') +
               '" aria-label="' +
@@ -630,9 +1141,49 @@
           els.markers.innerHTML = html;
         }
 
+        /** Indique les bornes hors de la fenêtre visible : jamais perdues de vue. */
+        function renderOffscreen() {
+          if (!hasView()) {
+            els.offscreen.hidden = true;
+            els.offscreen.textContent = '';
+            return;
+          }
+          var before = 0;
+          var after = 0;
+          for (var i = 0; i < state.chapters.length; i++) {
+            var s = state.chapters[i].startSec;
+            if (s < state.view.start - 1e-9) before++;
+            else if (s > state.view.end + 1e-9) after++;
+          }
+          if (!before && !after) {
+            els.offscreen.hidden = true;
+            els.offscreen.textContent = '';
+            return;
+          }
+          var parts = [];
+          if (before) parts.push(before + ' avant la fenêtre ◀');
+          if (after) parts.push(after + ' après la fenêtre ▶');
+          els.offscreen.textContent = parts.join(' · ') + ' — utilisez « Tout voir » pour les retrouver.';
+          els.offscreen.hidden = false;
+        }
+
+        /** Rendu de la seule chronologie (zoom / défilement : ni la liste ni l’export). */
+        function renderTimeline() {
+          renderTicks();
+          renderMarkers();
+          renderLoopMarks();
+          renderPlayhead();
+          renderOffscreen();
+        }
+
         function renderPlayhead() {
           var total = duration();
-          var left = total > 0 ? Math.min(100, (currentTime() / total) * 100) : 0;
+          var left = hasView()
+            ? secToPct(currentTime())
+            : total > 0
+              ? (currentTime() / total) * 100
+              : 0;
+          left = Math.max(0, Math.min(100, left));
           els.playhead.style.left = left.toFixed(3) + '%';
         }
 
@@ -744,7 +1295,9 @@
         function render() {
           renderTicks();
           renderMarkers();
+          renderLoopMarks();
           renderPlayhead();
+          renderOffscreen();
           renderList();
           renderSelected();
           renderExport();
@@ -754,6 +1307,8 @@
         /** Rendu « léger » après une saisie : on ne reconstruit pas les champs. */
         function renderAfterEdit() {
           renderMarkers();
+          renderPlayhead();
+          renderOffscreen();
           renderExport();
           renderWarnings();
         }
@@ -809,7 +1364,17 @@
             (count > 1 ? 's' : '') +
             (state.title ? ' · ' + state.title : '');
 
+          // Fenêtre visible remise sur « tout voir », accrochage et boucle remis
+          // à zéro : l'analyse de la nouvelle fenêtre suit (anti-rebond).
+          state.view = { start: 0, end: duration() };
+          state.silences = [];
+          state.snapped = null;
+          state.loop = null;
           render();
+          renderLoopInfo();
+          renderSnapInfo(false, null);
+          applySpeed();
+          goFullView();
         }
 
         function load(keepStatus) {
@@ -851,6 +1416,7 @@
 
         function deselect() {
           state.selected = null;
+          clearLoop();
           renderMarkers();
           renderList();
           renderSelected();
@@ -863,7 +1429,9 @@
           if (next === c.startSec) return;
           c.startSec = next;
           renderMarkers();
+          renderLoopMarks();
           renderPlayhead();
+          renderOffscreen();
           if (!skipList) renderList();
           renderSelected();
           renderExport();
@@ -1017,15 +1585,38 @@
           drag = { index: index };
         }
 
+        /** Glisser sur la règle (hors borne) : déplace la fenêtre visible dans le temps. */
+        function onTimelinePointerDown(ev) {
+          if (indexFromTarget(ev) != null) return;
+          if (!hasView()) return;
+          state.pan = { x: ev.clientX, start: state.view.start, end: state.view.end };
+          if (ev.preventDefault) ev.preventDefault();
+        }
+
         function onPointerMove(ev) {
-          if (!drag) return;
-          var sec = secFromClientX(ev.clientX);
-          if (sec == null) return;
-          setStart(drag.index, sec);
+          if (drag) {
+            var sec = secFromClientX(ev.clientX);
+            if (sec == null) return;
+            setStart(drag.index, maybeSnap(sec));
+            return;
+          }
+          if (!state.pan) return;
+          var box = timelineWidth();
+          if (!(box.width > 0)) return;
+          var total = duration();
+          var len = state.pan.end - state.pan.start;
+          var shift = ((ev.clientX - state.pan.x) / box.width) * len;
+          var s = Math.max(0, Math.min(state.pan.start - shift, total - len));
+          state.view = { start: s, end: s + len };
+          renderTimeline();
         }
 
         function onPointerUp() {
           drag = null;
+          if (state.pan) {
+            state.pan = null;
+            scheduleWave();
+          }
         }
 
         function onMarkersKeydown(ev) {
@@ -1035,10 +1626,16 @@
           if (index == null) return;
           var step = ev && ev.shiftKey ? 5 : 1;
 
-          if (key === 'ArrowLeft') {
-            nudge(index, -step);
-          } else if (key === 'ArrowRight') {
-            nudge(index, step);
+          if (key === 'ArrowLeft' || key === 'ArrowRight') {
+            var c = state.chapters[index];
+            var next = c ? c.startSec + (key === 'ArrowLeft' ? -step : step) : step;
+            if (ev && ev.altKey) {
+              next = maybeSnap(next);
+            } else {
+              state.snapped = null;
+              renderSnapInfo(false, null);
+            }
+            setStart(index, next);
           } else if (key === 'Enter' || key === ' ') {
             select(index);
             seekAndPreview(index);
@@ -1114,6 +1711,37 @@
             var p = el.play();
             if (p && typeof p.catch === 'function') p.catch(function () {});
           }
+        }
+
+        /** Applique la vitesse de lecture choisie à l'élément média actif. */
+        function applySpeed() {
+          var el = mediaEl();
+          var v = Number(els.speed && els.speed.value) || 1;
+          state.speed = v;
+          if (el) {
+            try {
+              el.playbackRate = v;
+            } catch (e) {
+              /* média non chargé : on ignore */
+            }
+          }
+        }
+
+        /** Raccourcis globaux (L = boucle A/B, Espace = lecture/pause). */
+        function onGlobalKey(ev) {
+          var target = ev && ev.target;
+          var tag = target && target.tagName ? String(target.tagName).toUpperCase() : '';
+          if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+          if (target && target.dataset && target.dataset.index !== undefined) return;
+          if (tag === 'BUTTON') return;
+          if (ev.key === 'l' || ev.key === 'L') {
+            toggleLoop();
+          } else if (ev.key === ' ' || ev.key === 'Spacebar') {
+            togglePlay();
+          } else {
+            return;
+          }
+          if (ev.preventDefault) ev.preventDefault();
         }
 
         // ---------- copie / téléchargement ----------
@@ -1198,9 +1826,27 @@
         $('copy').addEventListener('click', doCopy);
         $('download').addEventListener('click', doDownload);
 
+        // Zoom / défilement, accrochage, boucle, vitesse.
+        $('show-all').addEventListener('click', function () {
+          els.zoom.value = 'all';
+          goFullView();
+        });
+        els.zoom.addEventListener('change', function () {
+          if (els.zoom.value === 'all') goFullView();
+          else zoomToSpan(Number(els.zoom.value));
+        });
+        els.snapToggle.addEventListener('change', function () {
+          state.snapEnabled = !!els.snapToggle.checked;
+          if (!state.snapEnabled) renderSnapInfo(false, null);
+          setStatus(state.snapEnabled ? 'Accrochage aux silences activé.' : 'Accrochage aux silences désactivé.');
+        });
+        els.loopBtn.addEventListener('click', toggleLoop);
+        els.speed.addEventListener('change', applySpeed);
+
         els.markers.addEventListener('pointerdown', onPointerDown);
         els.markers.addEventListener('click', onMarkersClick);
         els.markers.addEventListener('keydown', onMarkersKeydown);
+        els.timeline.addEventListener('pointerdown', onTimelinePointerDown);
         els.timeline.addEventListener('pointermove', onPointerMove);
         els.timeline.addEventListener('pointerup', onPointerUp);
         els.timeline.addEventListener('pointercancel', onPointerUp);
@@ -1212,7 +1858,11 @@
           onListInput(ev, true);
         });
 
+        if (document && typeof document.addEventListener === 'function') document.addEventListener('keydown', onGlobalKey);
+
         function onTimeUpdate() {
+          enforceLoop();
+          autoFollow();
           renderPlayhead();
         }
         function onPause() {
