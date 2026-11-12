@@ -248,19 +248,26 @@ function Add-InstallReport {
 }
 
 function Show-InstallSummary {
-  param([bool]$KeyConfigured, [int]$ServerPort, [bool]$ServerReady = $true)
+  param([bool]$KeyConfigured, [int]$ServerPort, [bool]$ServerReady = $true, [switch]$InstallOnlyMode)
   Say-Title 'Résumé de l installation'
   Say 'Ce qui a été préparé (installé ou déjà présent) :' 'INFO'
   foreach ($item in $script:InstallReport) { Say ("  - {0} : {1}" -f $item.label, $item.status) 'INFO' }
+  # Une URL de serveur n'est affichée QUE si un serveur tourne réellement sur un
+  # port valide : jamais « :0 », jamais d'adresse quand rien n'écoute.
+  $showUrl = ($ServerReady -and $ServerPort -gt 0)
   if ($KeyConfigured) {
-    if ($ServerReady) {
+    if ($showUrl) {
       Say ("Étape suivante : ouvrez http://127.0.0.1:{0}/ et lancez un chapitrage." -f $ServerPort) 'OK'
+    } elseif ($InstallOnlyMode) {
+      Say 'Étape suivante : démarrez le serveur (Demarrer.cmd), puis ouvrez la page principale.' 'OK'
     } else {
       Say 'Étape suivante : corrigez la cause ci-dessus, puis relancez Demarrer.cmd.' 'OK'
     }
   } else {
-    if ($ServerReady) {
+    if ($showUrl) {
       Say ("Étape suivante : aucune clé OpenRouter n est configurée. Ouvrez http://127.0.0.1:{0}/admin, collez votre clé, puis cliquez Enregistrer et Tester." -f $ServerPort) 'MANQUANT'
+    } elseif ($InstallOnlyMode) {
+      Say 'Étape suivante : aucune clé OpenRouter n est configurée. Démarrez le serveur (Demarrer.cmd), puis ouvrez /admin pour la renseigner.' 'MANQUANT'
     } else {
       Say 'Étape suivante : aucune clé OpenRouter n est configurée. Une fois le serveur démarré, ouvrez /admin pour la renseigner.' 'MANQUANT'
     }
@@ -656,23 +663,27 @@ function Invoke-Start {
     $script:InstallPhaseRan = $true
   } else {
     Say-Title 'Chemin rapide : déjà installé'
-    $pieces = $mode.pieces
-    Say ("Node.js {0}, ffmpeg/ffprobe presents, dependances {1}, .env {2}, base {3}" -f $node.version, ($(if ($pieces.deps) { 'presentes' } else { 'absentes' })), ($(if ($pieces.env) { 'present' } else { 'absent' })), ($(if ($pieces.db) { 'presente' } else { 'absente' }))) 'OK'
+    # Pièces forcément en place ici (sinon on serait en phase d'installation) : on
+    # n'annonce donc jamais une pièce absente. En revanche, Node/ffmpeg ont pu
+    # être installés PENDANT ce lancement (winget) : le résumé doit le dire.
+    Say ("Node.js {0}, ffmpeg/ffprobe presents, dependances, .env et base en place" -f $node.version) 'OK'
     Say 'Installation deja faite : aucune etape rejouee, horodatage inchange.' 'OK'
-    Add-InstallReport 'Node.js' ("present, version " + $node.version)
-    Add-InstallReport 'ffmpeg/ffprobe' 'presents'
-    Add-InstallReport 'Dependances' ($(if ($pieces.deps) { 'deja presentes' } else { 'absentes' }))
-    Add-InstallReport '.env' ($(if ($pieces.env) { 'deja present' } else { 'absent' }))
-    Add-InstallReport 'Base de donnees' ($(if ($pieces.db) { 'deja presente' } else { 'absente' }))
+    Add-InstallReport 'Node.js' ($(if ($nodeWasInstalled) { "installe (winget), version $($node.version)" } else { "present, version $($node.version)" }))
+    Add-InstallReport 'ffmpeg/ffprobe' ($(if ($ffmpegWasInstalled) { 'installes (winget)' } else { 'presents' }))
+    Add-InstallReport 'Dependances' 'deja presentes'
+    Add-InstallReport '.env' 'deja present'
+    Add-InstallReport 'Base de donnees' 'deja presente'
     Add-InstallReport 'Installation' 'deja faite (chemin rapide)'
     $script:InstallPhaseRan = $false
   }
 
   # ---------- 3bis. Arrêt après installation (-InstallOnly) ----------
   if ($InstallOnly) {
+    # Aucun serveur ne tourne : le résumé ne doit afficher AUCUNE URL de serveur
+    # (ni un port 0), mais désigner /admin quand la clé manque.
     $keyOnly = Get-KeyConfigured -ServerPort 0
     Say-Title 'Mode installation seule (-InstallOnly) : le serveur n est pas demarre'
-    Show-InstallSummary -KeyConfigured $keyOnly -ServerPort 0
+    Show-InstallSummary -KeyConfigured $keyOnly -ServerPort 0 -ServerReady $false -InstallOnlyMode
     Show-StartupLogPath
     return 0
   }

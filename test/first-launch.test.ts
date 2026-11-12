@@ -242,6 +242,10 @@ test('premier lancement : phase complète (deps, .env, base, fumée, horodatage)
   assert.match(out, /Resume de l installation/, 'un résumé final est affiché');
   assert.match(out, /Etape suivante/, 'le résumé donne l étape suivante');
   assert.match(out, /\/admin/, 'sans clé configurée, le résumé pointe /admin');
+  // Régression verrouillée : aucun serveur ne tourne en mode -InstallOnly, donc
+  // AUCUNE URL de serveur — surtout pas « 127.0.0.1:0 ».
+  assert.doesNotMatch(out, /127\.0\.0\.1:0/, 'jamais de port 0 dans le résumé');
+  assert.doesNotMatch(out, /https?:\/\/127\.0\.0\.1/, 'aucune URL de serveur quand aucun serveur ne tourne');
   assert.match(out, /Raccourci du Bureau ignore/, 'le raccourci est ignoré (refus par défaut)');
 });
 
@@ -347,4 +351,93 @@ test('raccourci : la garde refuse par défaut et aucune création n a lieu sans 
   assert.equal(runLaunch(fx, ['-InstallOnly', '-NoBrowser']).status, 0);
   const links = (readdirSync(fx.dir, { recursive: true }) as string[]).filter((f) => f.endsWith('.lnk'));
   assert.deepEqual(links, [], 'aucun raccourci créé sans réponse affirmative explicite');
+});
+
+// ---------------------------------------------------------------------------
+// Résumé : URL seulement si un serveur tourne (port réel), étiquettes exactes
+// ---------------------------------------------------------------------------
+
+/** Extrait le texte d'une fonction PowerShell de premier niveau (accolade en colonne 0). */
+function extractFunction(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}`);
+  assert.ok(start >= 0, `fonction ${name} introuvable`);
+  const tail = source.slice(start);
+  // Fin = accolade seule en début de ligne (les blocs internes sont indentés).
+  const end = /\r?\n\}\r?\n/.exec(tail);
+  assert.ok(end, `fin de ${name} introuvable`);
+  return tail.slice(0, (end.index ?? 0) + end[0].length);
+}
+
+test('résumé : URL de serveur seulement quand il tourne (port réel, jamais 0)', () => {
+  // Reproduction EXACTE de la fonction du lanceur, avec des stubs d'affichage :
+  // on prouve le comportement sans démarrer de serveur.
+  const harness = [
+    '$script:InstallReport = New-Object System.Collections.Generic.List[object]',
+    "$script:InstallReport.Add(@{ label = 'Node.js'; status = 'present' })",
+    'function Say-Title { param([string]$Message) Write-Output ("TITRE: " + $Message) }',
+    'function Say { param([string]$Message, [string]$Kind = "INFO") Write-Output ("[$Kind] " + $Message) }',
+    extractFunction(readFileSync(scriptPath, 'utf8'), 'Show-InstallSummary'),
+    "Write-Output '--- READY-CLE'",
+    'Show-InstallSummary -KeyConfigured $true -ServerPort 4567',
+    "Write-Output '--- READY-NOKEY'",
+    'Show-InstallSummary -KeyConfigured $false -ServerPort 4567',
+    "Write-Output '--- NOTREADY'",
+    'Show-InstallSummary -KeyConfigured $false -ServerPort 4567 -ServerReady $false',
+    "Write-Output '--- INSTALLONLY'",
+    'Show-InstallSummary -KeyConfigured $false -ServerPort 0 -ServerReady $false -InstallOnlyMode',
+    "Write-Output '--- PORTZERO'",
+    'Show-InstallSummary -KeyConfigured $true -ServerPort 0',
+  ].join('\n');
+  const out = runPs(harness);
+
+  const section = (name: string): string => {
+    const from = out.indexOf(`--- ${name}`);
+    assert.ok(from >= 0, `section ${name} absente`);
+    const next = out.indexOf('--- ', from + 4);
+    return out.slice(from, next === -1 ? undefined : next);
+  };
+
+  assert.match(section('READY-CLE'), /127\.0\.0\.1:4567\//, 'serveur prêt : port réel affiché (clé OK)');
+  const nokey = section('READY-NOKEY');
+  assert.match(nokey, /127\.0\.0\.1:4567\/admin/, 'serveur prêt : /admin avec le port réel');
+  assert.doesNotMatch(nokey, /127\.0\.0\.1:0/, 'jamais de port 0');
+  for (const name of ['NOTREADY', 'INSTALLONLY', 'PORTZERO']) {
+    assert.doesNotMatch(section(name), /https?:\/\/127\.0\.0\.1/, `« ${name} » : aucune URL de serveur`);
+  }
+  assert.match(section('INSTALLONLY'), /\/admin/, 'installation seule sans clé : /admin reste désigné');
+});
+
+test('résumé : chaque appel sans serveur passe -ServerReady $false (aucun port 0)', () => {
+  const content = readFileSync(scriptPath, 'utf8');
+  const calls = content.match(/Show-InstallSummary -KeyConfigured[^\n]*/g) ?? [];
+  assert.equal(calls.length, 3, 'trois appels attendus (installation seule, échec serveur, serveur prêt)');
+  for (const call of calls) {
+    if (/-ServerPort 0\b/.test(call)) {
+      assert.match(call, /-ServerReady \$false/, `appel sans serveur devant forcer -ServerReady $false : ${call}`);
+    }
+  }
+  assert.match(content, /Show-InstallSummary -KeyConfigured \$keyConfigured -ServerPort \$port\b/, 'le cas « serveur prêt » passe le port réellement choisi');
+});
+
+test('résumé : « installé pendant ce lancement » distingué de « déjà présent »', () => {
+  const content = readFileSync(scriptPath, 'utf8');
+  // Les DEUX chemins (phase d'installation ET chemin rapide) étiquettent selon
+  // l'installation effectivement réalisée par winget pendant ce lancement.
+  assert.equal((content.match(/if \(\$nodeWasInstalled\)/g) ?? []).length, 2, 'Node.js étiqueté selon $nodeWasInstalled dans les deux chemins');
+  assert.equal((content.match(/if \(\$ffmpegWasInstalled\)/g) ?? []).length, 2, 'ffmpeg étiqueté selon $ffmpegWasInstalled dans les deux chemins');
+
+  // Les branches « absentes » du chemin rapide étaient inatteignables (le chemin
+  // rapide exige toutes les pièces) : elles ont été supprimées.
+  const fast = content.slice(content.indexOf('Chemin rapide'), content.indexOf('-InstallOnly) : le serveur'));
+  assert.ok(fast.length > 0, 'bloc « chemin rapide » localisé');
+  assert.doesNotMatch(fast, /absentes|'absent'|'absente'/, 'plus d annonce de pièce absente sur le chemin rapide');
+  assert.match(fast, /Add-InstallReport 'Installation' 'deja faite \(chemin rapide\)'/);
+});
+
+test('-InstallOnly est documenté (option de support assumée)', () => {
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  assert.match(readme, /-InstallOnly/, '-InstallOnly doit être documenté dans le README');
+  assert.match(readme, /support/i, 'l usage « support » doit être explicite');
+  const cmd = readFileSync(join(root, 'Démarrer.cmd'), 'utf8');
+  assert.match(cmd, /-InstallOnly/, '-InstallOnly listé par Démarrer.cmd');
 });

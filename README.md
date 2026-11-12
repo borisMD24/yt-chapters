@@ -50,8 +50,14 @@ Démarrer.cmd -Check          :: préflight seul : rapporte l'état et sort sans
 Démarrer.cmd -NoBrowser      :: démarre sans ouvrir le navigateur
 Démarrer.cmd -Port 3001      :: force le port
 Démarrer.cmd -ForceInstall   :: rejoue la phase d'installation même si elle est déjà faite
-Démarrer.cmd -InstallOnly    :: joue l'installation puis s'arrête sans démarrer le serveur (support)
+Démarrer.cmd -InstallOnly    :: joue l'installation puis s'arrête sans démarrer le serveur (support et vérification)
 ```
+
+`-InstallOnly` est une option de **support** : elle exécute la phase d'installation
+complète puis affiche le résumé **sans démarrer le serveur** — utile pour vérifier
+une installation ou pour les tests hors ligne. Comme aucun serveur ne tourne, le
+résumé ne comporte **aucune adresse de serveur** et désigne `/admin` comme étape
+suivante si la clé OpenRouter manque.
 
 `-Check` n'écrit que dans `logs/` et ne démarre rien : c'est ce qu'utilisent les
 tests pour vérifier l'environnement.
