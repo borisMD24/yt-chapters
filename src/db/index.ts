@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import * as schema from './schema';
 import { ensureAppSettingsTable } from './app-settings';
 import { ensureVideosMediaPathColumn } from './media-path';
+import { ensureMediaWordsTable } from './media-words';
 
 /** Chemin du fichier SQLite (affiché par la section d'administration). */
 export const dbPath = process.env.DB_PATH ?? 'data/chapters.db';
@@ -21,5 +22,8 @@ ensureAppSettingsTable(sqlite);
 
 // Idem pour la colonne `videos.media_path` (éditeur de bornes + route média).
 ensureVideosMediaPathColumn(sqlite);
+
+// Et pour la table `media_words` (mots horodatés de l'éditeur de bornes).
+ensureMediaWordsTable(sqlite);
 
 export const db = drizzle(sqlite, { schema });

@@ -426,6 +426,36 @@
         color: var(--warn);
         font-weight: 600;
       }
+
+      /* ---------- texte autour de la borne ---------- */
+      .words-panel {
+        margin: 12px 0 0;
+        padding: 12px 14px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+      }
+      .words-title {
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: 1.02rem;
+        margin: 0 0 4px;
+      }
+      .words-context {
+        margin: 6px 0 0;
+        line-height: 1.9;
+        min-height: 1.4em;
+      }
+      .word {
+        padding: 1px 3px;
+        border-radius: 3px;
+      }
+      .word-current {
+        background: var(--accent-soft);
+        border-bottom: 2px solid var(--accent);
+        font-weight: 700;
+        color: var(--accent-strong);
+      }
       .keys {
         columns: 2;
         margin: 0;
@@ -543,6 +573,11 @@
           <p id="wave-status" class="hint"></p>
           <p id="snap-info" class="hint" hidden></p>
           <p id="loop-info" class="hint" hidden></p>
+          <div id="words-panel" class="words-panel" aria-live="polite">
+            <h3 id="t-words" class="words-title">Texte autour de la borne</h3>
+            <p id="words-status" class="hint"></p>
+            <p id="words-context" class="words-context"></p>
+          </div>
           <div class="row-actions" style="margin-top: 12px">
             <button id="preview-play" class="btn btn-secondary btn-small" type="button">Lecture / pause</button>
             <button id="nudge-back-5" class="btn btn-secondary btn-small" type="button">− 5 s</button>
@@ -631,12 +666,20 @@
         var WAVE_MAX_SPAN_SEC = 120;
         /** Anti-rebond du dessin de la forme d'onde (millisecondes). */
         var WAVE_DEBOUNCE_MS = 250;
+        /** Marge (secondes) de part et d'autre de la borne pour le panneau de texte. */
+        var WORDS_CONTEXT_SEC = 15;
+        /** Anti-rebond du panneau de texte après un déplacement (millisecondes). */
+        var WORDS_DEBOUNCE_MS = 150;
+        /** Message dégradé quand le média n'a aucun mot enregistré. */
+        var WORDS_EMPTY_MESSAGE =
+          "Aucun texte enregistré pour ce média (chapitré avant cette version) — relancez un chapitrage pour l'obtenir.";
 
         var state = {
           videoId: '',
           title: '',
           durationSec: 0,
           hasVideo: false,
+          hasWords: false,
           mediaUrl: null,
           chapters: [],
           selected: null,
@@ -652,6 +695,8 @@
           speed: 1,
           waveTimer: null,
           waveSeq: 0,
+          wordsTimer: null,
+          wordsSeq: 0,
           pan: null,
         };
 
@@ -673,6 +718,8 @@
           waveStatus: $('wave-status'),
           snapInfo: $('snap-info'),
           loopInfo: $('loop-info'),
+          wordsStatus: $('words-status'),
+          wordsContext: $('words-context'),
           zoom: $('zoom'),
           showAll: $('show-all'),
           snapToggle: $('snap-toggle'),
@@ -710,6 +757,11 @@
 
         function pad2(n) {
           return String(n).padStart(2, '0');
+        }
+
+        /** Arrondi à 0,01 s (fenêtres transmises à l'API des mots). */
+        function round2(value) {
+          return Math.round(Number(value) * 100) / 100;
         }
 
         /** mm:ss (ou h:mm:ss au-delà d'une heure), format YouTube. */
@@ -1100,6 +1152,98 @@
           }
         }
 
+        // ---------- texte autour de la borne ----------
+
+        function setWordsStatus(text, warn) {
+          els.wordsStatus.textContent = text || '';
+          els.wordsStatus.className = 'hint' + (warn ? ' warn-text' : '');
+        }
+
+        /**
+         * Programme (anti-rebond) le chargement du texte autour de la borne.
+         * Chaque sélection ou déplacement ANNULE la demande en attente : seule la
+         * dernière fenêtre est interrogée.
+         */
+        function scheduleWords() {
+          if (state.wordsTimer != null && typeof clearTimeout === 'function') clearTimeout(state.wordsTimer);
+          if (typeof setTimeout === 'function') {
+            state.wordsTimer = setTimeout(refreshWords, WORDS_DEBOUNCE_MS);
+          } else {
+            state.wordsTimer = null;
+            refreshWords();
+          }
+        }
+
+        /** Fenêtre [from, to] autour de la borne, bornée au début et à la fin du média. */
+        function wordsWindow(base) {
+          var from = Math.max(0, base - WORDS_CONTEXT_SEC);
+          var to = base + WORDS_CONTEXT_SEC;
+          var total = duration();
+          if (total > 0 && to > total) to = total;
+          if (!(to > from)) to = from + 0.001;
+          return { from: from, to: to };
+        }
+
+        /** Charge le texte prononcé autour de la borne sélectionnée (lecture en base). */
+        function refreshWords() {
+          if (state.selected == null || !state.chapters[state.selected]) {
+            els.wordsContext.innerHTML = '';
+            setWordsStatus("Sélectionnez une borne pour voir le texte prononcé autour d'elle.");
+            return;
+          }
+          if (!state.hasWords) {
+            els.wordsContext.innerHTML = '';
+            setWordsStatus(WORDS_EMPTY_MESSAGE);
+            return;
+          }
+          var base = state.chapters[state.selected].startSec;
+          var win = wordsWindow(base);
+          var seq = ++state.wordsSeq;
+          setWordsStatus('Chargement du texte…');
+          fetch(
+            '/videos/' +
+              encodeURIComponent(state.videoId) +
+              '/words?from=' +
+              round2(win.from) +
+              '&to=' +
+              round2(win.to),
+          )
+            .then(readJson)
+            .then(function (res) {
+              if (seq !== state.wordsSeq) return; // une demande plus récente a pris la main
+              if (!res.ok) {
+                els.wordsContext.innerHTML = '';
+                setWordsStatus("Texte indisponible : le reste de l'éditeur reste utilisable.", true);
+                return;
+              }
+              renderWords(res.data || {}, base);
+            })
+            .catch(function () {
+              if (seq !== state.wordsSeq) return;
+              els.wordsContext.innerHTML = '';
+              setWordsStatus("Texte indisponible : le reste de l'éditeur reste utilisable.", true);
+            });
+        }
+
+        /** Affiche les mots de la fenêtre, en mettant en évidence celui de la borne. */
+        function renderWords(data, base) {
+          var words = data && Array.isArray(data.words) ? data.words : [];
+          if (!words.length) {
+            els.wordsContext.innerHTML = '';
+            setWordsStatus('Aucun texte prononcé dans cette fenêtre.');
+            return;
+          }
+          var html = '';
+          for (var i = 0; i < words.length; i++) {
+            var s = Number(words[i].startSec) || 0;
+            var e = Number(words[i].endSec) || 0;
+            var current = base >= s - 1e-6 && base <= e + 1e-6;
+            html += '<span class="word' + (current ? ' word-current' : '') + '">' + esc(words[i].word) + '</span> ';
+          }
+          els.wordsContext.innerHTML = html;
+          setWordsStatus(data && data.truncated ? 'Fenêtre tronquée : seuls les premiers mots sont affichés.' : '');
+        }
+
         // ---------- rendu ----------
 
         function markerLabel(chapter, index) {
@@ -1332,6 +1476,7 @@
           state.title = data.title || '';
           state.durationSec = Number(data.durationSec) || 0;
           state.hasVideo = !!data.hasVideo;
+          state.hasWords = !!data.hasWords;
           state.mediaUrl = data.mediaUrl || null;
           state.chapters = (data.chapters || []).map(function (c) {
             return { id: c.id, startSec: Number(c.startSec) || 0, title: c.title || '', source: c.source };
@@ -1381,6 +1526,7 @@
           renderSnapInfo(false, null);
           applySpeed();
           goFullView();
+          scheduleWords();
         }
 
         function load(keepStatus) {
@@ -1418,6 +1564,7 @@
           renderMarkers();
           if (!skipList) renderList();
           renderSelected();
+          scheduleWords();
         }
 
         function deselect() {
@@ -1426,6 +1573,7 @@
           renderMarkers();
           renderList();
           renderSelected();
+          scheduleWords();
         }
 
         function setStart(index, sec, skipList) {
@@ -1442,6 +1590,7 @@
           renderSelected();
           renderExport();
           renderWarnings();
+          scheduleWords();
         }
 
         function nudge(index, delta) {

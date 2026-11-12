@@ -8,9 +8,9 @@ import { createReadStream } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { extname, basename, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
-import { and, asc, desc, eq, like, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, like, lte, sql } from 'drizzle-orm';
 import { db, dbPath } from './db';
-import { videos, segments, chapters } from './db/schema';
+import { videos, segments, chapters, mediaWords } from './db/schema';
 import { fetchMeta, fetchTranscript, listChannelVideos } from './youtube';
 import { proposeChapters, buildWarnings, chaptersToText, LLM_MODEL } from './chapters';
 import { generateLocalChapters, persistLocalChapters } from './local-chapters';
@@ -59,6 +59,7 @@ import {
 } from './openrouter-key';
 import { testOpenRouterKey } from './openrouter-key-test';
 import { createCreditsProvider, type CreditsProvider } from './openrouter-credits';
+import { parseWordsQuery, WORDS_MAX_COUNT } from './video-words';
 
 // Une seule source de vérité pour les extensions acceptées (liste MEDIA_DIR
 // et envoi de fichier).
@@ -364,12 +365,18 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     const resolved = candidate ? await resolveMediaFile(candidate, mediaRoots()) : null;
     const playable = !!resolved && resolved.ok;
     const hasVideo = playable ? await probeHasVideo(resolved.path) : false;
+    // Présence de mots horodatés (table `media_words`) : l'éditeur affiche un
+    // état dégradé honnête plutôt qu'un panneau vide quand le média a été
+    // chapitré avant la conservation des mots.
+    const hasWords =
+      db.select({ id: mediaWords.id }).from(mediaWords).where(eq(mediaWords.videoId, id)).limit(1).get() !== undefined;
 
     return {
       videoId: video.id,
       title: video.title,
       durationSec: video.durationSec,
       hasVideo,
+      hasWords,
       mediaUrl: playable ? `/media/${encodeURIComponent(id)}` : null,
       chapters: chs.map((c) => ({
         id: c.id,
@@ -386,6 +393,58 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     const segs = await ensureTranscript(id);
     if (!segs) return reply.code(422).send({ error: 'no transcript available' });
     return segs;
+  });
+
+  /**
+   * `GET /videos/:id/words?from=&to=` : mots horodatés d'un chapitrage local
+   * prononcés dans une FENÊTRE, lus en base (aucun ffmpeg).
+   *  - fenêtre invalide (négative, inversée, > 120 s, non finie) → `400` FR ;
+   *  - vidéo inconnue → `404` FR ;
+   *  - `to` au-delà de la durée connue → tronquée (jamais d'erreur) ;
+   *  - mots triés par `start_ms`, plafonnés (`WORDS_MAX_COUNT`) avec mention de
+   *    troncature ;
+   *  - `{ from, to, truncated, words: [{ startSec, endSec, word }] }`, et
+   *    `words: []` proprement quand la table n'a rien pour ce média.
+   */
+  app.get('/videos/:id/words', async (req, reply) => {
+    const { id } = idParam.parse(req.params);
+    const window = parseWordsQuery(req.query);
+    if (!window.ok) return reply.code(400).send({ error: window.message });
+
+    const video = db.select({ durationSec: videos.durationSec }).from(videos).where(eq(videos.id, id)).get();
+    if (!video) return reply.code(404).send({ error: VIDEO_NOT_FOUND_MESSAGE });
+
+    // Fenêtre effective : tronquée à la durée connue et JAMAIS inversée.
+    const known = video.durationSec ?? 0;
+    let from = window.from;
+    let to = window.to;
+    if (known > 0) {
+      if (to > known) to = known;
+      if (from > to) from = to;
+    }
+
+    const rows = db
+      .select({ startMs: mediaWords.startMs, endMs: mediaWords.endMs, text: mediaWords.text })
+      .from(mediaWords)
+      .where(
+        and(
+          eq(mediaWords.videoId, id),
+          gte(mediaWords.startMs, Math.round(from * 1000)),
+          lte(mediaWords.startMs, Math.round(to * 1000)),
+        ),
+      )
+      .orderBy(asc(mediaWords.startMs), asc(mediaWords.id))
+      .limit(WORDS_MAX_COUNT + 1)
+      .all();
+
+    const truncated = rows.length > WORDS_MAX_COUNT;
+    const kept = truncated ? rows.slice(0, WORDS_MAX_COUNT) : rows;
+    return {
+      from: Math.round(from * 100) / 100,
+      to: Math.round(to * 100) / 100,
+      truncated,
+      words: kept.map((w) => ({ startSec: w.startMs / 1000, endSec: w.endMs / 1000, word: w.text })),
+    };
   });
 
   // ---------- chapters ----------

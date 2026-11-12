@@ -46,6 +46,31 @@ export const appSettings = sqliteTable('app_settings', {
     .default(sql`(unixepoch())`),
 });
 
+/**
+ * Mots horodatés d'un chapitrage LOCAL (granularité sous les 100 ms), conservés
+ * en base pour l'éditeur de bornes (« Texte autour de la borne »). Table
+ * DÉDIÉE : `transcript_segments` reste réservée aux sous-titres YouTube et n'est
+ * jamais alimentée par un média local.
+ *
+ * `start_ms`/`end_ms` sont des millisecondes ENTIÈRES (granularité du STT) ;
+ * `idx` est l'ordre du mot dans le média. Le DDL de démarrage est identique
+ * (`src/db/media-words.ts`).
+ */
+export const mediaWords = sqliteTable(
+  'media_words',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    videoId: text('video_id')
+      .notNull()
+      .references(() => videos.id, { onDelete: 'cascade' }),
+    idx: integer('idx').notNull(),
+    startMs: integer('start_ms').notNull(),
+    endMs: integer('end_ms').notNull(),
+    text: text('text').notNull(),
+  },
+  (t) => ({ byVideo: index('media_words_video_idx').on(t.videoId, t.startMs) }),
+);
+
 export const chapters = sqliteTable(
   'chapters',
   {

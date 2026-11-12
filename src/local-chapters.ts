@@ -18,7 +18,7 @@ import {
 } from './chapters';
 import type { Segment } from './youtube';
 import { db } from './db';
-import { chapters as chaptersTable, videos } from './db/schema';
+import { chapters as chaptersTable, mediaWords as mediaWordsTable, videos } from './db/schema';
 
 export type LocalChaptersOptions = {
   chunkSec?: number;
@@ -66,8 +66,12 @@ export type LocalChaptersResult = {
   mediaPath: string;
   /** Transcript en mémoire (offsets absolus), non persisté. */
   segments: Segment[];
-  /** Mots horodatés en mémoire (offsets absolus), non persistés. */
-  words: Word[];
+  /**
+   * Mots horodatés (offsets absolus) fournis par le pipeline, conservés pour
+   * l'éditeur de bornes (table `media_words`). Optionnel : un résultat sans mots
+   * (`undefined` ou `[]`) laisse les anciens mots en base intacts.
+   */
+  words?: Word[];
   chapters: Proposed[];
   text: string;
   warnings: string[];
@@ -187,14 +191,26 @@ export async function generateLocalChapters(
 }
 
 /**
+ * Taille des lots d'insertion des mots : un média de 2 h 55 en produit ~150 000,
+ * l'insertion unitaire serait inutilisable. 1 000 lignes × 5 colonnes restent
+ * très en deçà du plafond de variables de SQLite.
+ */
+export const WORDS_INSERT_BATCH = 1000;
+
+/**
  * Persiste le résultat d'un chapitrage local : une ligne `videos` (id synthétique
- * `local:<sha1>`, chemin du média compris) et les chapitres générés
- * (`source = llm`) dans une transaction. Les chapitres LLM non validés
- * précédents sont remplacés, comme `/videos/:id/chapters/generate`.
- * Implémentation unique partagée par la route `/local/chapters` et le registre
- * de jobs.
+ * `local:<sha1>`, chemin du média compris), les chapitres générés
+ * (`source = llm`) et les mots horodatés (`media_words`) dans une transaction.
+ * Les chapitres LLM non validés précédents sont remplacés, comme
+ * `/videos/:id/chapters/generate`.
+ *
+ * Les mots d'un nouveau passage REMPLACENT ceux du passage précédent
+ * (suppression puis insertion par lots) ; sans mot disponible, rien n'est
+ * supprimé (les anciens mots d'un média chapitré avant cette version restent).
+ * `transcript_segments` n'est jamais touchée.
  */
 export function persistLocalChapters(result: LocalChaptersResult): void {
+  const words = result.words ?? [];
   db.transaction((tx) => {
     tx.insert(videos)
       .values({
@@ -235,6 +251,26 @@ export function persistLocalChapters(result: LocalChaptersResult): void {
           })),
         )
         .run();
+    }
+
+    // Mots horodatés : remplacement par lots. Aucun mot disponible -> on ne
+    // touche pas aux mots existants (ni suppression, ni écrasement).
+    if (words.length) {
+      tx.delete(mediaWordsTable).where(eq(mediaWordsTable.videoId, result.videoId)).run();
+      for (let i = 0; i < words.length; i += WORDS_INSERT_BATCH) {
+        const batch = words.slice(i, i + WORDS_INSERT_BATCH);
+        tx.insert(mediaWordsTable)
+          .values(
+            batch.map((w, j) => ({
+              videoId: result.videoId,
+              idx: i + j,
+              startMs: Math.round(w.startSec * 1000),
+              endMs: Math.round(w.endSec * 1000),
+              text: w.word,
+            })),
+          )
+          .run();
+      }
     }
   });
 }

@@ -229,6 +229,12 @@ n'est pas concerné.
 
 - `POST /videos`, `POST /channel/sync`, `GET /videos`, `GET /videos/:id`
 - `GET /videos/:id/transcript` (sous-titres YouTube, persistés dans `transcript_segments`)
+- `GET /videos/:id/words?from=<sec>&to=<sec>` — mots horodatés d'un chapitrage
+  **local** prononcés dans une fenêtre (`0 < to − from ≤ 120 s`), lus en base
+  (aucun ffmpeg). Réponse `{ from, to, truncated, words: [{ startSec, endSec, word }] }`,
+  triée par début et plafonnée à 2 000 mots (`truncated` signale la troncature).
+  Fenêtre invalide → `400`, vidéo inconnue → `404` (messages français) ; `to`
+  au-delà de la durée connue est tronquée ; `{ words: [] }` si le média n'en a pas.
 - `POST /videos/:id/chapters/generate` — chapitrage LLM d'une vidéo YouTube
 - `POST /local/chapters` — `{ path, chunkSec?, lang?, maxChunks? }` → `{ chapters, text, warnings }`.
   Persiste une ligne `videos` (id synthétique `local:<sha1 du chemin absolu, 16 hex>`)
@@ -244,11 +250,15 @@ n'est pas concerné.
   `MEDIA_DIR` (fichier régulier, extension autorisée), sinon `403`/`404` en
   français : aucun chemin n'est jamais accepté du client.
 - `GET /videos/:id/edit` — charge utile de l'éditeur de bornes
-  (`{ videoId, title, durationSec, hasVideo, mediaUrl, chapters }`) ; `hasVideo`
-  vient d'une vraie sonde `ffprobe` (fichier avec piste vidéo, ou audio seul).
+  (`{ videoId, title, durationSec, hasVideo, hasWords, mediaUrl, chapters }`) ;
+  `hasVideo` vient d'une vraie sonde `ffprobe` (fichier avec piste vidéo, ou
+  audio seul) et `hasWords` indique si des mots horodatés existent en base pour
+  ce média (pour afficher l'état dégradé du panneau de texte).
 - `GET /edit?video=<id>` — page « Ajuster les bornes » : chronologie avec une
   borne par chapitre, lecteur intégré, aperçu court, titres et horodatages
-  modifiables, enregistrement via les routes de chapitres existantes.
+  modifiables, panneau **« Texte autour de la borne »** (mots prononcés de −15 s
+  à +15 s, mot de la borne mis en évidence), enregistrement via les routes de
+  chapitres existantes.
 - `GET /local/media` — fichiers audio/vidéo de `MEDIA_DIR` (`{ dir, files, hint? }`).
 - `POST /local/jobs` — démarre un job (`202 { jobId }`) ; le chemin doit être un
   fichier de `MEDIA_DIR` (sinon `400`/`404`).
@@ -304,14 +314,36 @@ npm run chapters -- "<fichier>" [--chunk 300] [--lang fr] [--max-chunks N] [--js
    `input_audio` en base64 (sans préfixe `data:`) et `response_format: verbose_json`.
    Repli automatique sur `json` (un segment couvrant le chunk) si le provider routé
    refuse `verbose_json` ; réessais avec backoff sur `429`/`5xx`.
-4. **Recollage** : les segments de chaque chunk sont décalés de l'offset absolu du
-   chunk puis triés.
+4. **Recollage** : les segments (et les mots horodatés, quand le provider en
+   fournit) de chaque chunk sont décalés de l'offset absolu du chunk puis triés.
 5. **Chapitrage** : chat completions OpenRouter (`qwen`), `json_schema` strict puis
    repli `json_object`, parsing défensif, puis normalisation (1er chapitre à 0:00,
    écart mini 10 s, avertissements < 3 chapitres…).
 
 > Le transcript d'un média local reste **en mémoire** : il n'est pas écrit dans
 > `transcript_segments` et ne modifie pas le comportement de `/videos/:id/transcript`.
+
+### Mots horodatés conservés (table `media_words`)
+
+Le STT renvoie des horodatages **par mot** (granularité `['word','segment']`,
+précision sous les 100 ms) ; ces mots sont désormais conservés dans une table
+**DÉDIÉE**, `media_words` (`id`, `video_id`, `idx`, `start_ms`, `end_ms`, `text`,
+index sur `(video_id, start_ms)`), créée automatiquement au démarrage (DDL
+idempotent dans `src/db/media-words.ts`). Ils servent uniquement à l'**éditeur de
+bornes** : le panneau « Texte autour de la borne » lit `GET /videos/:id/words`
+pour afficher ce qui est prononcé de −15 s à +15 s autour de la borne
+sélectionnée, avec le mot de la borne mis en évidence.
+
+- **`transcript_segments` n'est PAS utilisée** pour un média local : elle reste
+  réservée aux sous-titres YouTube, et `/videos/:id/transcript` garde son
+  comportement. Un test vérifie explicitement que cette table reste vide alors
+  que `media_words` est remplie.
+- Un nouveau chapitrage du même média **remplace** ses mots (suppression puis
+  insertion **par lots**) ; sans mot disponible, les anciens ne sont ni effacés
+  ni écrasés.
+- **Espace disque** : environ 150 000 lignes pour 3 h de média, soit quelques
+  mégaoctets — négligeable. Les médias **antérieurs à cette version** n'ont pas
+  de mots : l'éditeur l'indique honnêtement et propose de relancer un chapitrage.
 
 ## Développement
 
