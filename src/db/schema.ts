@@ -52,9 +52,9 @@ export const appSettings = sqliteTable('app_settings', {
  * DÉDIÉE : `transcript_segments` reste réservée aux sous-titres YouTube et n'est
  * jamais alimentée par un média local.
  *
- * `start_ms`/`end_ms` sont des millisecondes ENTIÈRES (granularité du STT) ;
- * `idx` est l'ordre du mot dans le média. Le DDL de démarrage est identique
- * (`src/db/media-words.ts`).
+ * `start_ms`/`end_ms` sont des millisecondes ENTIÈRES (granularité du STT). Le
+ * DDL de démarrage est la forme canonique de Drizzle (`src/db/media-words.ts`) :
+ * `db:push` doit voir « aucun changement » après la réparation automatique.
  */
 export const mediaWords = sqliteTable(
   'media_words',
@@ -63,7 +63,6 @@ export const mediaWords = sqliteTable(
     videoId: text('video_id')
       .notNull()
       .references(() => videos.id, { onDelete: 'cascade' }),
-    idx: integer('idx').notNull(),
     startMs: integer('start_ms').notNull(),
     endMs: integer('end_ms').notNull(),
     text: text('text').notNull(),

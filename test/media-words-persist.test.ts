@@ -33,13 +33,13 @@ function result(videoId: string, words?: LocalChaptersResult['words']): LocalCha
 
 const rowsFor = (videoId: string) =>
   sqlite
-    .prepare('SELECT idx, start_ms, end_ms, text FROM media_words WHERE video_id = ? ORDER BY idx')
-    .all(videoId) as { idx: number; start_ms: number; end_ms: number; text: string }[];
+    .prepare('SELECT start_ms, end_ms, text FROM media_words WHERE video_id = ? ORDER BY start_ms')
+    .all(videoId) as { start_ms: number; end_ms: number; text: string }[];
 
 const segmentCount = (videoId: string) =>
   (sqlite.prepare('SELECT count(*) AS n FROM transcript_segments WHERE video_id = ?').get(videoId) as { n: number }).n;
 
-test('les mots sont insérés avec idx, millisecondes et texte', () => {
+test('les mots sont insérés avec millisecondes et texte', () => {
   const id = 'local:persistwords01';
   persistLocalChapters(
     result(id, [
@@ -49,9 +49,9 @@ test('les mots sont insérés avec idx, millisecondes et texte', () => {
     ]),
   );
   assert.deepEqual(rowsFor(id), [
-    { idx: 0, start_ms: 0, end_ms: 420, text: 'Bonjour' },
-    { idx: 1, start_ms: 500, end_ms: 820, text: 'tout' },
-    { idx: 2, start_ms: 900, end_ms: 1000, text: 'le' },
+    { start_ms: 0, end_ms: 420, text: 'Bonjour' },
+    { start_ms: 500, end_ms: 820, text: 'tout' },
+    { start_ms: 900, end_ms: 1000, text: 'le' },
   ]);
 });
 
@@ -59,7 +59,7 @@ test('un second passage REMPLACE les mots (aucun doublon)', () => {
   const id = 'local:persistwords02';
   persistLocalChapters(result(id, [{ word: 'ancien', startSec: 1, endSec: 2 }]));
   persistLocalChapters(result(id, [{ word: 'nouveau', startSec: 3, endSec: 4 }]));
-  assert.deepEqual(rowsFor(id), [{ idx: 0, start_ms: 3000, end_ms: 4000, text: 'nouveau' }]);
+  assert.deepEqual(rowsFor(id), [{ start_ms: 3000, end_ms: 4000, text: 'nouveau' }]);
 });
 
 test('les mots sont insérés PAR LOTS (aucune insertion unitaire)', () => {
@@ -75,10 +75,9 @@ test('les mots sont insérés PAR LOTS (aucune insertion unitaire)', () => {
   assert.equal(rows.length, total, 'tous les mots présents');
   assert.equal(rows[0].text, 'mot0');
   assert.equal(rows[total - 1].text, 'mot' + (total - 1));
-  // L'ordre (`idx`) est contigu et non remis à zéro d'un lot à l'autre.
   assert.deepEqual(
-    rows.map((r) => r.idx),
-    Array.from({ length: total }, (_, i) => i),
+    rows.map((r) => r.start_ms),
+    Array.from({ length: total }, (_, i) => Math.round(i * 0.2 * 1000)),
   );
 });
 
@@ -88,11 +87,11 @@ test('sans mots, les anciens mots ne sont ni effacés ni écrasés', () => {
 
   // Champ absent…
   persistLocalChapters(result(id, undefined));
-  assert.deepEqual(rowsFor(id), [{ idx: 0, start_ms: 5000, end_ms: 6000, text: 'gardé' }]);
+  assert.deepEqual(rowsFor(id), [{ start_ms: 5000, end_ms: 6000, text: 'gardé' }]);
 
   // … ou tableau vide.
   persistLocalChapters(result(id, []));
-  assert.deepEqual(rowsFor(id), [{ idx: 0, start_ms: 5000, end_ms: 6000, text: 'gardé' }]);
+  assert.deepEqual(rowsFor(id), [{ start_ms: 5000, end_ms: 6000, text: 'gardé' }]);
 });
 
 test('INVARIANT : `transcript_segments` reste vide après persistance des mots', () => {

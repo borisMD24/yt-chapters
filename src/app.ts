@@ -60,6 +60,7 @@ import {
 import { testOpenRouterKey } from './openrouter-key-test';
 import { createCreditsProvider, type CreditsProvider } from './openrouter-credits';
 import { parseWordsQuery, WORDS_MAX_COUNT } from './video-words';
+import { isMediaWordsUnavailable } from './db/media-words';
 
 // Une seule source de vérité pour les extensions acceptées (liste MEDIA_DIR
 // et envoi de fichier).
@@ -367,9 +368,15 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     const hasVideo = playable ? await probeHasVideo(resolved.path) : false;
     // Présence de mots horodatés (table `media_words`) : l'éditeur affiche un
     // état dégradé honnête plutôt qu'un panneau vide quand le média a été
-    // chapitré avant la conservation des mots.
-    const hasWords =
-      db.select({ id: mediaWords.id }).from(mediaWords).where(eq(mediaWords.videoId, id)).limit(1).get() !== undefined;
+    // chapitré avant la conservation des mots. Table absente ou schéma
+    // incompatible -> `hasWords: false` (jamais 500) ; toute autre erreur remonte.
+    let hasWords = false;
+    try {
+      hasWords =
+        db.select({ id: mediaWords.id }).from(mediaWords).where(eq(mediaWords.videoId, id)).limit(1).get() !== undefined;
+    } catch (err) {
+      if (!isMediaWordsUnavailable(err)) throw err;
+    }
 
     return {
       videoId: video.id,
@@ -423,19 +430,29 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       if (from > to) from = to;
     }
 
-    const rows = db
-      .select({ startMs: mediaWords.startMs, endMs: mediaWords.endMs, text: mediaWords.text })
-      .from(mediaWords)
-      .where(
-        and(
-          eq(mediaWords.videoId, id),
-          gte(mediaWords.startMs, Math.round(from * 1000)),
-          lte(mediaWords.startMs, Math.round(to * 1000)),
-        ),
-      )
-      .orderBy(asc(mediaWords.startMs), asc(mediaWords.id))
-      .limit(WORDS_MAX_COUNT + 1)
-      .all();
+    const rows = (() => {
+      try {
+        return db
+          .select({ startMs: mediaWords.startMs, endMs: mediaWords.endMs, text: mediaWords.text })
+          .from(mediaWords)
+          .where(
+            and(
+              eq(mediaWords.videoId, id),
+              gte(mediaWords.startMs, Math.round(from * 1000)),
+              lte(mediaWords.startMs, Math.round(to * 1000)),
+            ),
+          )
+          .orderBy(asc(mediaWords.startMs), asc(mediaWords.id))
+          .limit(WORDS_MAX_COUNT + 1)
+          .all();
+      } catch (err) {
+        // Table absente ou schéma incompatible : on renvoie une fenêtre VIDE
+        // (dégradation honnête, comme un média sans mots) ; toute autre erreur
+        // reste visible.
+        if (!isMediaWordsUnavailable(err)) throw err;
+        return [] as { startMs: number; endMs: number; text: string }[];
+      }
+    })();
 
     const truncated = rows.length > WORDS_MAX_COUNT;
     const kept = truncated ? rows.slice(0, WORDS_MAX_COUNT) : rows;

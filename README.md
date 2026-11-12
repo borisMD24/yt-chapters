@@ -327,12 +327,13 @@ npm run chapters -- "<fichier>" [--chunk 300] [--lang fr] [--max-chunks N] [--js
 
 Le STT renvoie des horodatages **par mot** (granularité `['word','segment']`,
 précision sous les 100 ms) ; ces mots sont désormais conservés dans une table
-**DÉDIÉE**, `media_words` (`id`, `video_id`, `idx`, `start_ms`, `end_ms`, `text`,
-index sur `(video_id, start_ms)`), créée automatiquement au démarrage (DDL
-idempotent dans `src/db/media-words.ts`). Ils servent uniquement à l'**éditeur de
-bornes** : le panneau « Texte autour de la borne » lit `GET /videos/:id/words`
-pour afficher ce qui est prononcé de −15 s à +15 s autour de la borne
-sélectionnée, avec le mot de la borne mis en évidence.
+**DÉDIÉE**, `media_words` (`id`, `video_id`, `start_ms`, `end_ms`, `text`, index
+sur `(video_id, start_ms)`), créée automatiquement au démarrage (DDL idempotent
+dans `src/db/media-words.ts`, dont la forme est **canonique pour Drizzle** afin
+que `npm run db:push` ne détecte aucun changement). Ils servent uniquement à
+l'**éditeur de bornes** : le panneau « Texte autour de la borne » lit
+`GET /videos/:id/words` pour afficher ce qui est prononcé de −15 s à +15 s autour
+de la borne sélectionnée, avec le mot de la borne mis en évidence.
 
 - **`transcript_segments` n'est PAS utilisée** pour un média local : elle reste
   réservée aux sous-titres YouTube, et `/videos/:id/transcript` garde son
@@ -341,9 +342,10 @@ sélectionnée, avec le mot de la borne mis en évidence.
 - Un nouveau chapitrage du même média **remplace** ses mots (suppression puis
   insertion **par lots**) ; sans mot disponible, les anciens ne sont ni effacés
   ni écrasés.
-- **Espace disque** : environ 150 000 lignes pour 3 h de média, soit quelques
-  mégaoctets — négligeable. Les médias **antérieurs à cette version** n'ont pas
-  de mots : l'éditeur l'indique honnêtement et propose de relancer un chapitrage.
+- **Espace disque** : de l'ordre de **≈ 27 000 mots pour 3 h de parole** (rythme
+  observé d'environ 2,5 mots/s), soit ≈ 1,5 Mio — négligeable. Les médias
+  **antérieurs à cette version** n'ont pas de mots : l'éditeur l'indique
+  honnêtement et propose de relancer un chapitrage.
 
 ## Développement
 

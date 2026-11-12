@@ -33,16 +33,14 @@ function createSchema(): void {
   raw.exec(`CREATE TABLE transcript_segments (id INTEGER PRIMARY KEY AUTOINCREMENT,
     video_id TEXT NOT NULL, start_sec REAL NOT NULL, end_sec REAL NOT NULL, text TEXT NOT NULL)`);
   raw.exec(`CREATE TABLE media_words (id INTEGER PRIMARY KEY AUTOINCREMENT, video_id TEXT NOT NULL,
-    idx INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, text TEXT NOT NULL)`);
+    start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, text TEXT NOT NULL)`);
 
   const v = raw.prepare('INSERT INTO videos (id, title, duration_sec) VALUES (?, ?, ?)');
   v.run(A, 'A', 600);
   v.run(EMPTY, 'B', 300);
   v.run(DENSE, 'C', 600);
 
-  const w = raw.prepare(
-    'INSERT INTO media_words (video_id, idx, start_ms, end_ms, text) VALUES (?, ?, ?, ?, ?)',
-  );
+  const w = raw.prepare('INSERT INTO media_words (video_id, start_ms, end_ms, text) VALUES (?, ?, ?, ?)');
   const aWords: [number, number, string][] = [
     [9000, 9400, 'neuf'],
     [9400, 9800, 'quarante'],
@@ -50,10 +48,10 @@ function createSchema(): void {
     [100200, 100600, 'cent'],
     [595000, 595400, 'fin'],
   ];
-  aWords.forEach(([s, e, t], i) => w.run(A, i, s, e, t));
+  for (const [s, e, t] of aWords) w.run(A, s, e, t);
 
   // Média dense : 2 500 mots entre 0 et 100 s (plafond de mots dépassé).
-  for (let i = 0; i < 2500; i++) w.run(DENSE, i, i * 40, i * 40 + 30, 'm' + i);
+  for (let i = 0; i < 2500; i++) w.run(DENSE, i * 40, i * 40 + 30, 'm' + i);
   raw.close();
 }
 
@@ -154,4 +152,29 @@ test('GET /videos/:id/edit indique la présence de mots (hasWords)', async () =>
   const withoutWords = await app.inject({ method: 'GET', url: `/videos/${EMPTY}/edit` });
   assert.equal(withoutWords.statusCode, 200);
   assert.equal((withoutWords.json() as { hasWords: boolean }).hasWords, false);
+});
+
+// DERNIER test du fichier : il SUPPRIME `media_words` de la base partagée.
+test('table media_words ABSENTE : dégradation honnête (200 / hasWords false), jamais 500', async () => {
+  const raw = new Database(process.env.DB_PATH!);
+  raw.exec('DROP TABLE media_words');
+  raw.close();
+
+  const app = await getApp();
+
+  const words = await app.inject({ method: 'GET', url: `/videos/${A}/words?from=0&to=120` });
+  assert.equal(words.statusCode, 200);
+  const body = words.json() as Body;
+  assert.deepEqual(body.words, []);
+  assert.equal(body.truncated, false);
+  assert.equal(body.from, 0);
+  assert.equal(body.to, 120);
+
+  const edit = await app.inject({ method: 'GET', url: `/videos/${A}/edit` });
+  assert.equal(edit.statusCode, 200);
+  assert.equal((edit.json() as { hasWords: boolean }).hasWords, false);
+
+  // L'absence de table ne masque pas les autres cas : vidéo inconnue → 404.
+  const unknown = await app.inject({ method: 'GET', url: '/videos/local:jamaisvu/words?from=0&to=10' });
+  assert.equal(unknown.statusCode, 404);
 });

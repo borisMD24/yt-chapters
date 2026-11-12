@@ -261,9 +261,8 @@ export function persistLocalChapters(result: LocalChaptersResult): void {
         const batch = words.slice(i, i + WORDS_INSERT_BATCH);
         tx.insert(mediaWordsTable)
           .values(
-            batch.map((w, j) => ({
+            batch.map((w) => ({
               videoId: result.videoId,
-              idx: i + j,
               startMs: Math.round(w.startSec * 1000),
               endMs: Math.round(w.endSec * 1000),
               text: w.word,
