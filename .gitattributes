@@ -6,3 +6,9 @@
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 *.bat text eol=crlf
+
+# Scripts de lancement macOS : TOUJOURS en LF, meme si `core.autocrlf=true`.
+# Un `.sh`/`.command` restitue en CRLF echoue au double-clic : le `\r` fait
+# partie du nom de l'interpreteur (« bad interpreter: /bin/bash^M »).
+*.sh text eol=lf
+*.command text eol=lf

@@ -114,6 +114,93 @@ Démarrer.cmd -ForceInstall
 | Le lanceur s'arrête sur « votre installation de ffmpeg est incomplète » | Votre `ffmpeg` ne sait pas encoder en mp3. Réinstallez-le (`winget install --id Gyan.FFmpeg -e`, ou « ffmpeg-release-full » depuis <https://www.gyan.dev/ffmpeg/builds/>), puis relancez `Démarrer.cmd`. |
 | Rien ne se réinstalle alors que je viens de mettre à jour le code | C'est le chemin rapide (installation déjà faite). Forcez la phase complète : `Démarrer.cmd -ForceInstall`. |
 
+## Démarrage en un clic (macOS)
+
+**Double-cliquez sur `Démarrer.command`** à la racine du projet : une fenêtre de
+Terminal s'ouvre, et l'outil fait le reste. La fenêtre **reste ouverte** à la fin
+pour que vous puissiez lire un éventuel message d'erreur. C'est l'équivalent macOS
+de `Démarrer.cmd` : mêmes étapes, mêmes garde-fous.
+
+1. **Vérifie Node.js** (20 minimum). S'il manque ou est trop ancien, il propose de
+   l'installer avec **Homebrew** (`brew install node`) — **la réponse par défaut
+   est de refuser** : seule une réponse explicitement affirmative (`o`, `oui`,
+   `y`, `yes`) installe. En cas de refus, d'absence de `brew` **ou d'échec de
+   l'installation**, il ouvre <https://nodejs.org/fr/download> et explique quoi
+   installer.
+2. **Vérifie `ffmpeg` et `ffprobe`.** S'ils manquent, il propose
+   `brew install ffmpeg` (là aussi, refus par défaut) ; sinon il ouvre
+   <https://ffmpeg.org/download.html> et indique quoi installer et où le placer
+   (`PATH`).
+3. **Installe les dépendances** (`npm ci`, repli `npm install`) si nécessaire.
+4. **Prépare la configuration** : `.env` créé depuis `.env.example` s'il manque.
+5. **Prépare la base** (`npm run db:push`) : si la commande échoue, il affiche les
+   dernières lignes et **s'arrête sans démarrer le serveur**.
+6. **Test de fumée multimédia** : 1 s de silence **encodée en mp3** puis **relue**.
+   En cas d'échec, il **s'arrête sans démarrer le serveur** (tout le chapitrage
+   local en dépend) et n'écrit aucun horodatage.
+7. **Horodatage** `data/install.json` (Node, ffmpeg, révision git) : sa présence
+   (avec les pièces en place) fait passer les lancements suivants par le **chemin
+   rapide** (rien n'est réinstallé, l'horodatage n'est pas réécrit).
+8. **Choisit un port libre** (3000, sinon 3001…3010), **démarre le serveur** en
+   dupliquant sa sortie dans `logs/serveur-<horodatage>.log` **et** ses propres
+   étapes dans `logs/demarrage-<horodatage>.log`, **attend `/local/health`**
+   (~30 s) puis **ouvre le navigateur** — sur **`/admin`** si aucune clé OpenRouter
+   n'est configurée, sinon sur la page principale. Une **URL de serveur n'est
+   affichée que lorsqu'un serveur répond réellement** (jamais `:0`).
+9. **À l'arrêt** (Ctrl+C ou fenêtre fermée), un `trap` sur `INT`/`TERM`/`EXIT`
+   arrête proprement le serveur **et tous ses descendants** (`npm` → `tsx` →
+   `node`) : jamais de processus orphelin.
+
+Options (en ligne de commande) :
+
+```bash
+./Démarrer.command --check          # préflight seul : rapporte l'état, n'installe et ne démarre rien
+./Démarrer.command --no-browser     # démarre sans ouvrir le navigateur
+./Démarrer.command --port 3001      # force le port
+./Démarrer.command --force-install  # rejoue la phase d'installation complète
+./Démarrer.command --install-only   # installe puis s'arrête sans démarrer le serveur (support)
+```
+
+`--install-only` est une option de **support** : comme aucun serveur ne tourne, le
+résumé ne comporte **aucune adresse de serveur** et désigne `/admin` comme étape
+suivante si la clé OpenRouter manque. `--check` n'écrit que dans `logs/` et ne
+démarre rien.
+
+### Mise en route du fichier
+
+- **Bit exécutable** : le dépôt pose le bit `+x` **dans l'index git**, donc un
+  `git clone` restitue un fichier exécutable (sans lui, le double-clic échoue —
+  silencieusement). Si vous n'avez pas cloné le dépôt (copie manuelle, archive),
+  rendez-le exécutable :
+
+  ```bash
+  chmod +x Démarrer.command scripts/launch.sh
+  ```
+
+- **Gatekeeper** : un dépôt **cloné par git n'est pas mis en quarantaine** et se
+  lance normalement. En revanche, un dossier **téléchargé** (archive `.zip`, pièce
+  jointe…) peut afficher « *… ne peut pas être ouvert car il provient d'un
+  développeur non identifié* » : faites alors un **clic droit → Ouvrir**, puis
+  confirmez.
+- Le script est **compatible bash 3.2** (c'est ce qui est livré avec macOS) et
+  n'utilise **jamais `sudo`**.
+
+### Limites et tests
+
+> **Le lanceur macOS n'a pas encore été exécuté sur un vrai Mac.** Sa logique est
+> couverte par `test/mac-launch-script.test.ts`, qui l'exécute réellement mais
+> **sous Git Bash (bash 5) sur Windows**, avec des commandes factices (`node`,
+> `npm`, `ffmpeg`, `ffprobe`, `brew`, `open`, `lsof`) et un vrai petit serveur HTTP
+> local. Ces tests prouvent la **logique** (consentement en échec-fermé, premier
+> lancement vs chemin rapide, horodatage corrompu ⇒ premier lancement, `--check`
+> sans effet de bord, échec du test de fumée ⇒ arrêt, résumé sans URL de serveur)
+> mais **pas** le comportement de `brew`, de `open`, de `lsof`, ni celui de bash
+> 3.2 : ce qu'il reste à valider sur une vraie machine.
+
+> Le **raccourci du Bureau** proposé par le lanceur Windows n'a pas d'équivalent
+> ici : sur macOS, gardez le dossier dans le Dock, ou lancez `Démarrer.command`
+> depuis le Finder.
+
 ## Prérequis
 
 - Node 22+ (fetch natif), `ffmpeg`/`ffprobe` dans le `PATH`.
