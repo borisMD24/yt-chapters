@@ -1077,8 +1077,14 @@
           }
         }
 
-        /** Défile la fenêtre pour garder la tête de lecture visible pendant la lecture. */
+        /**
+         * Défile la fenêtre pour garder la tête de lecture visible pendant la
+         * lecture. Suspendu tant qu'un DÉFILEMENT MANUEL est en cours : sinon le
+         * `timeupdate` recentrerait la vue sous les doigts de l'utilisateur et
+         * rendrait le déplacement impossible.
+         */
         function autoFollow() {
+          if (state.pan) return;
           if (!hasView()) return;
           var total = duration();
           var len = viewLen();
@@ -1569,12 +1575,19 @@
           return { width: el.clientWidth || el.offsetWidth || 0, left: 0 };
         }
 
+        /**
+         * Convertit une position écran (px) en temps ABSOLU (secondes) DANS LA
+         * FENÊTRE VISIBLE. C'est le seul inverse de `secToPct` : sans tenir
+         * compte du zoom, un glisser sous fenêtre réduite retomberait sur la
+         * durée totale et placerait la borne ailleurs (voire hors fenêtre).
+         */
         function secFromClientX(clientX) {
           var total = duration();
           var box = timelineWidth();
           if (!(total > 0) || !(box.width > 0)) return null;
-          var ratio = (clientX - box.left) / box.width;
-          return clampSec(Math.max(0, Math.min(1, ratio)) * total);
+          var ratio = Math.max(0, Math.min(1, (clientX - box.left) / box.width));
+          if (hasView()) return clampSec(state.view.start + ratio * viewLen());
+          return clampSec(ratio * total);
         }
 
         function onPointerDown(ev) {
@@ -1621,6 +1634,14 @@
 
         function onMarkersKeydown(ev) {
           var key = ev && ev.key;
+          // « L » est traité ici AUSSI : le gestionnaire global ignore les
+          // événements venant d'un marqueur (`dataset.index`), donc sans cette
+          // branche la boucle A/B resterait inerte au clavier depuis une borne.
+          if (key === 'l' || key === 'L') {
+            toggleLoop();
+            if (ev.preventDefault) ev.preventDefault();
+            return;
+          }
           var index = indexFromTarget(ev);
           if (index == null) index = state.selected;
           if (index == null) return;

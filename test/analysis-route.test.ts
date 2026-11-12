@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { FastifyInstance } from 'fastify';
-import { AnalysisError, ANALYSIS_TIMEOUT_MESSAGE, type AnalysisRunner } from '../src/media-analysis.ts';
+import { AnalysisError, ANALYSIS_BUSY_MESSAGE, ANALYSIS_TIMEOUT_MESSAGE, type AnalysisRunner } from '../src/media-analysis.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'ckr-ana-'));
 const mediaDir = join(root, 'media');
@@ -46,7 +46,7 @@ const DEFAULT_STDERR = [
 ].join('\n');
 
 let calls: { file: string; from: number; len: number }[] = [];
-let behaviour: 'ok' | 'timeout' | 'short' | 'fail' = 'ok';
+let behaviour: 'ok' | 'timeout' | 'short' | 'fail' | 'busy' = 'ok';
 
 function pcmSeconds(seconds: number): Buffer {
   const samples = Math.round(seconds * 8000);
@@ -58,6 +58,7 @@ function pcmSeconds(seconds: number): Buffer {
 const runner: AnalysisRunner = async (file, from, len) => {
   calls.push({ file, from, len });
   if (behaviour === 'timeout') throw new AnalysisError('timeout', ANALYSIS_TIMEOUT_MESSAGE);
+  if (behaviour === 'busy') throw new AnalysisError('busy', ANALYSIS_BUSY_MESSAGE);
   if (behaviour === 'fail') throw new Error('boom');
   if (behaviour === 'short') {
     return { pcm: pcmSeconds(len), stderr: 'Duration: 00:00:10.00, start: 0.0\n[silencedetect @ 0x1] silence_start: 2' };
@@ -149,6 +150,15 @@ test('un délai dépassé répond 504 avec un message FR', async () => {
   const res = await app.inject({ method: 'GET', url: `/media/${MEDIA_ID}/analysis?from=0&to=20` });
   assert.equal(res.statusCode, 504);
   assert.match((res.json() as { error: string }).error, /délai/i);
+  behaviour = 'ok';
+});
+
+test('le plafond de concurrence atteint répond 429 avec un message FR', async () => {
+  const app = await getApp();
+  behaviour = 'busy';
+  const res = await app.inject({ method: 'GET', url: `/media/${MEDIA_ID}/analysis?from=0&to=25` });
+  assert.equal(res.statusCode, 429);
+  assert.match((res.json() as { error: string }).error, /simultan/i);
   behaviour = 'ok';
 });
 

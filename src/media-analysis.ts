@@ -37,6 +37,9 @@ export const ANALYSIS_CACHE_TTL_MS = 5 * 60 * 1000;
 /** Nombre maximal d'entrées du cache. */
 export const ANALYSIS_CACHE_MAX_ENTRIES = 64;
 
+/** Nombre maximal d'analyses simultanées (au-delà : 429, jamais de file). */
+export const ANALYSIS_MAX_CONCURRENT = 3;
+
 /** Message : fenêtre invalide (négative, inversée, non finie). */
 export const ANALYSIS_WINDOW_INVALID_MESSAGE =
   'Fenêtre d’analyse invalide : indiquez un début positif ou nul et une fin strictement supérieure au début.';
@@ -55,7 +58,19 @@ export const ANALYSIS_TOOLS_MISSING_MESSAGE =
 export const ANALYSIS_FAILED_MESSAGE =
   'L’analyse de la forme d’onde a échoué. Le reste de l’éditeur reste utilisable : réessayez, ou déplacez la borne à la main.';
 
-export type AnalysisFailureKind = 'timeout' | 'missing-tools' | 'failed';
+/** Message : trop d’analyses simultanées (plafond de concurrence atteint). */
+export const ANALYSIS_BUSY_MESSAGE =
+  'Trop d’analyses simultanées : réessayez dans un instant, ou zoomez sur une portion plus courte.';
+
+export type AnalysisFailureKind = 'timeout' | 'missing-tools' | 'busy' | 'failed';
+
+/** Code HTTP associé à chaque échec d'analyse. */
+const ANALYSIS_FAILURE_STATUS: Record<AnalysisFailureKind, number> = {
+  timeout: 504,
+  'missing-tools': 503,
+  busy: 429,
+  failed: 500,
+};
 
 /** Erreur d'analyse portant le code HTTP à renvoyer (message français destiné à l'utilisateur). */
 export class AnalysisError extends Error {
@@ -66,7 +81,7 @@ export class AnalysisError extends Error {
   ) {
     super(message);
     this.name = 'AnalysisError';
-    this.status = kind === 'timeout' ? 504 : kind === 'missing-tools' ? 503 : 500;
+    this.status = ANALYSIS_FAILURE_STATUS[kind];
   }
 }
 
@@ -252,6 +267,8 @@ export type AnalysisServiceOptions = {
   runner?: AnalysisRunner;
   ttlMs?: number;
   maxEntries?: number;
+  /** Créneaux ffmpeg simultanés autorisés (défaut 3) ; au-delà : 429. */
+  maxConcurrent?: number;
 };
 
 export type AnalysisService = {
@@ -259,6 +276,8 @@ export type AnalysisService = {
   analyze(id: string, file: string, from: number, to: number, knownDurationSec?: number): Promise<AnalysisResult>;
   /** Nombre d'entrées en cache (tests). */
   cacheSize(): number;
+  /** Nombre d'analyses en vol (tests : doit retomber à zéro). */
+  pending(): number;
 };
 
 /**
@@ -270,7 +289,17 @@ export function createAnalysisService(opts: AnalysisServiceOptions = {}): Analys
   const runner = opts.runner ?? defaultAnalysisRunner;
   const ttlMs = opts.ttlMs ?? ANALYSIS_CACHE_TTL_MS;
   const maxEntries = opts.maxEntries ?? ANALYSIS_CACHE_MAX_ENTRIES;
+  const maxConcurrent = Math.max(1, opts.maxConcurrent ?? ANALYSIS_MAX_CONCURRENT);
   const cache = new Map<string, { result: AnalysisResult; expiresAt: number }>();
+  /**
+   * Analyses EN VOL, clé par identifiant + fenêtre : N demandes identiques
+   * simultanées partagent la MÊME promesse (et donc un seul ffmpeg), y compris
+   * lorsqu'elle rejette. L'entrée disparaît au dénouement : un échec n'est jamais
+   * mémorisé.
+   */
+  const inFlight = new Map<string, Promise<AnalysisResult>>();
+  /** Créneaux ffmpeg occupés : borne l'occupation (jamais de file d'attente). */
+  let running = 0;
 
   function remember(key: string, result: AnalysisResult, now: number): void {
     cache.delete(key);
@@ -283,43 +312,77 @@ export function createAnalysisService(opts: AnalysisServiceOptions = {}): Analys
   }
 
   return {
-    async analyze(id, file, from, to, knownDurationSec = 0): Promise<AnalysisResult> {
+    analyze(id, file, from, to, knownDurationSec = 0): Promise<AnalysisResult> {
       const q = quantizeWindow(from, to);
       const key = `${id}|${q.from}|${q.len}`;
       const now = Date.now();
       const hit = cache.get(key);
       if (hit) {
-        if (hit.expiresAt > now) return hit.result;
+        if (hit.expiresAt > now) return Promise.resolve(hit.result);
         cache.delete(key);
       }
 
-      let output: AnalysisRunnerOutput;
-      try {
-        output = await runner(file, q.from, q.len);
-      } catch (err) {
-        if (err instanceof AnalysisError) throw err;
-        throw toAnalysisError(err);
+      // Coalescence AVANT le plafond : rejoindre une analyse déjà en vol
+      // n'occupe aucun créneau supplémentaire.
+      const runningTask = inFlight.get(key);
+      if (runningTask) return runningTask;
+
+      if (running >= maxConcurrent) {
+        return Promise.reject(new AnalysisError('busy', ANALYSIS_BUSY_MESSAGE));
       }
+      running++;
 
-      const { pcm, stderr } = output;
-      const announced = parseMediaDurationSec(stderr);
-      const durationSec = announced !== null ? announced : knownDurationSec > 0 ? knownDurationSec : 0;
+      const task = (async (): Promise<AnalysisResult> => {
+        try {
+          let output: AnalysisRunnerOutput;
+          try {
+            output = await runner(file, q.from, q.len);
+          } catch (err) {
+            if (err instanceof AnalysisError) throw err;
+            throw toAnalysisError(err);
+          }
 
-      let toEff = q.from + q.len;
-      if (durationSec > 0 && toEff > durationSec) toEff = durationSec;
-      const effLen = Math.max(0, toEff - q.from);
+          const { pcm, stderr } = output;
+          const announced = parseMediaDurationSec(stderr);
+          const durationSec = announced !== null ? announced : knownDurationSec > 0 ? knownDurationSec : 0;
 
-      const peaks = computePeaks(pcm, PEAK_POINTS);
-      const silences = parseSilences(stderr, q.from, effLen > 0 ? effLen : q.len).filter(
-        (s) => effLen <= 0 || s.startSec <= round2(toEff),
-      );
+          // Fenêtre effective : tronquée à la durée du média, et JAMAIS inversée
+          // (une demande entièrement au-delà de la fin devient `from === to`).
+          let toEff = q.from + q.len;
+          if (durationSec > 0) {
+            if (toEff > durationSec) toEff = durationSec;
+            if (toEff < q.from) toEff = q.from;
+          }
+          const effLen = Math.max(0, toEff - q.from);
 
-      const result: AnalysisResult = { from: q.from, to: round2(toEff), durationSec: round2(durationSec), peaks, silences };
-      remember(key, result, now);
-      return result;
+          const peaks = effLen > 0 ? computePeaks(pcm, PEAK_POINTS) : [];
+          const silences =
+            effLen > 0 ? parseSilences(stderr, q.from, effLen).filter((s) => s.startSec <= round2(toEff)) : [];
+
+          const result: AnalysisResult = {
+            from: q.from,
+            to: round2(toEff),
+            durationSec: round2(durationSec),
+            peaks,
+            silences,
+          };
+          remember(key, result, Date.now());
+          return result;
+        } finally {
+          running = Math.max(0, running - 1);
+          inFlight.delete(key);
+        }
+      })();
+
+      inFlight.set(key, task);
+      return task;
     },
     cacheSize() {
       return cache.size;
+    },
+    /** Nombre d'analyses EN VOL (tests : le compteur doit retomber à zéro). */
+    pending() {
+      return running;
     },
   };
 }
