@@ -1,9 +1,42 @@
-node_modules
+# ---------------------------------------------------------------------------
+# Règle d'or : ce dépôt ne contient JAMAIS de secret, ni de donnée d'exécution.
+# Les clés d'API vivent dans .env (ignoré) ou dans la base locale ; les médias
+# et les journaux restent sur la machine. Vérifiez `git status` avant de pousser.
+# ---------------------------------------------------------------------------
+
+# Dépendances
+node_modules/
+
+# Secrets et configuration locale (`.env.example` est versionné, lui)
 .env
-data/*.db*
-# Cache d'envoi runtime (médias de l'utilisateur) : jamais versionné.
-data/uploads/
-# Journaux du lanceur (Démarrer.cmd) : locaux, jamais versionnés.
+.env.*
+!.env.example
+
+# Données d'exécution : base SQLite (+ fichiers WAL/SHM), cache d'envois,
+# médias éventuels. Seul le marqueur de dossier est conservé.
+data/*
+!data/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+
+# Journaux du lanceur et du serveur (locaux par définition)
 logs/
-# Sauvegardes d'éditeur : jamais versionnées.
+*.log
+npm-debug.log*
+
+# Mémoire de l'agent (bloc de projet) : outillage local, hors produit
+.opencode/
+
+# Sauvegardes et fichiers temporaires d'éditeur
 *.bak
+*.orig
+*.rej
+*~
+*.swp
+*.tmp
+
+# Bruit des systèmes de fichiers (Windows / macOS)
+Thumbs.db
+desktop.ini
+.DS_Store
