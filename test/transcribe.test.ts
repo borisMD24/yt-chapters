@@ -45,19 +45,52 @@ test('transcribeChunk envoie input_audio base64 sans préfixe data: en verbose_j
   assert.equal(res.fallback, false);
 });
 
+test('transcribeChunk demande d’abord les mots (word+segment) en verbose_json', async () => {
+  let seenInit: RequestInit | undefined;
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    seenInit = init;
+    return jsonResponse({
+      segments: [{ start: 0.5, end: 2.0, text: ' bonjour ' }],
+      words: [
+        { word: ' bonjour', start: 0.5, end: 1.2 },
+        { word: ' monde', start: 1.2, end: 2.0 },
+      ],
+    });
+  };
+
+  const res = await transcribeChunk({ bytes, fetchImpl, apiKey: 'k', chunkDurationSec: 4 });
+
+  const body = JSON.parse(String(seenInit!.body));
+  assert.equal(body.response_format, 'verbose_json');
+  assert.deepEqual(body.timestamp_granularities, ['word', 'segment']);
+  assert.deepEqual(res.words, [
+    { word: 'bonjour', startSec: 0.5, endSec: 1.2 },
+    { word: 'monde', startSec: 1.2, endSec: 2 },
+  ]);
+  assert.equal(res.fallback, false);
+});
+
 test('transcribeChunk retombe sur response_format=json si verbose_json est rejeté (4xx)', async () => {
-  const calls: string[] = [];
+  const calls: { format: string; gran?: string[] }[] = [];
   const fetchImpl: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String((init as RequestInit).body));
-    calls.push(body.response_format);
+    calls.push({ format: body.response_format, gran: body.timestamp_granularities });
     if (body.response_format === 'verbose_json') return jsonResponse({ error: 'unsupported' }, 400);
     return jsonResponse({ text: 'transcription simple' });
   };
 
   const res = await transcribeChunk({ bytes, fetchImpl, apiKey: 'k', chunkDurationSec: 12.5 });
 
-  assert.deepEqual(calls, ['verbose_json', 'json']);
+  // Échelle de repli complète : la combinaison la plus riche d'abord, puis
+  // `word` seul, puis le verbose_json historique, enfin le json simple.
+  assert.deepEqual(calls, [
+    { format: 'verbose_json', gran: ['word', 'segment'] },
+    { format: 'verbose_json', gran: ['word'] },
+    { format: 'verbose_json', gran: undefined },
+    { format: 'json', gran: undefined },
+  ]);
   assert.equal(res.fallback, true);
+  assert.deepEqual(res.words, []);
   // Repli : un unique segment couvrant tout le chunk.
   assert.deepEqual(res.segments, [{ startSec: 0, endSec: 12.5, text: 'transcription simple' }]);
 });

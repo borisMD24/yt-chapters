@@ -365,7 +365,15 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
         .run();
       if (proposed.length) {
         tx.insert(chapters)
-          .values(proposed.map((c) => ({ videoId: id, ...c, source: 'llm' as const })))
+          .values(
+            proposed.map((c) => ({
+              videoId: id,
+              // Secondes ENTIÈRES (format YouTube) : arrondi au plus proche.
+              startSec: Math.round(c.startSec),
+              title: c.title,
+              source: 'llm' as const,
+            })),
+          )
           .run();
       }
     });

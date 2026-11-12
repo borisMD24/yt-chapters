@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { chunkToMp3 } from './audio';
-import { transcribeFile, stitchSegments, type ChunkTranscript } from './transcribe';
+import { transcribeFile, stitchSegments, stitchWords, type ChunkTranscript, type Word } from './transcribe';
 import { buildWarnings, chaptersToText, normalize, proposeChapters, type Proposed, MIN_GAP } from './chapters';
 import type { Segment } from './youtube';
 import { db } from './db';
@@ -51,6 +51,8 @@ export type LocalChaptersResult = {
   mediaPath: string;
   /** Transcript en mémoire (offsets absolus), non persisté. */
   segments: Segment[];
+  /** Mots horodatés en mémoire (offsets absolus), non persistés. */
+  words: Word[];
   chapters: Proposed[];
   text: string;
   warnings: string[];
@@ -135,7 +137,7 @@ export async function generateLocalChapters(
         language: opts.lang,
         format: 'mp3',
       });
-      transcripts.push({ startSec: c.startSec, segments: res.segments });
+      transcripts.push({ startSec: c.startSec, segments: res.segments, words: res.words });
       report({ phase: 'transcribing', doneChunks: transcripts.length, totalChunks: chunks.length });
     }
 
@@ -143,10 +145,13 @@ export async function generateLocalChapters(
     report({ phase: 'chaptering', doneChunks: 0, totalChunks: 0 });
 
     const segments = stitchSegments(transcripts);
+    // Précision par mot seulement si TOUS les chunks en fournissent : un chunk
+    // sans mots serait sinon absent du transcript lisible (perte de texte muette).
+    const words = transcripts.every((t) => (t.words?.length ?? 0) > 0) ? stitchWords(transcripts) : [];
     const title = basename(abs);
     // Densité contrôlée ici (et seulement ici) : le modèle ne respecte pas la
     // consigne « un chapitre toutes les 3 à 8 minutes ».
-    const proposed = await proposeChapters({ title, durationSec }, segments);
+    const proposed = await proposeChapters({ title, durationSec, words }, segments);
     const chapters = applyChapterSpacing(proposed, resolveChapterMinGapSec(opts.minGapSec));
 
     return {
@@ -155,6 +160,7 @@ export async function generateLocalChapters(
       durationSec,
       mediaPath: abs,
       segments,
+      words,
       chapters,
       text: chaptersToText(chapters),
       warnings: buildWarnings(chapters),
@@ -203,7 +209,15 @@ export function persistLocalChapters(result: LocalChaptersResult): void {
       .run();
     if (result.chapters.length) {
       tx.insert(chaptersTable)
-        .values(result.chapters.map((c) => ({ videoId: result.videoId, ...c, source: 'llm' as const })))
+        .values(
+          result.chapters.map((c) => ({
+            videoId: result.videoId,
+            // Secondes ENTIÈRES : YouTube n'accepte que cela -> arrondi au plus proche.
+            startSec: Math.round(c.startSec),
+            title: c.title,
+            source: 'llm' as const,
+          })),
+        )
         .run();
     }
   });

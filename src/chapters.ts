@@ -1,6 +1,17 @@
 import OpenAI from 'openai';
 import { z } from 'zod';
 import { resolveOpenRouterKey } from './openrouter-key';
+import {
+  fmtLineTs,
+  groupWordsIntoSentences,
+  MAX_LINE_CHARS,
+  normalizeToken,
+  SENTENCE_PAUSE_SEC,
+  snapToWordStart,
+  tokenEditDistance,
+  type Sentence,
+  type Word,
+} from './words';
 
 // Chaptering LLM via OpenRouter (SDK openai avec baseURL OpenRouter).
 const BASE_URL = process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1';
@@ -26,8 +37,13 @@ function getClient(): OpenAI {
 
 export const MIN_GAP = 10; // règle YouTube : 10s min par chapitre
 
+/**
+ * Horodatage `h:mm:ss`/`m:ss` pour l'EXPORT YouTube et les en-têtes du
+ * transcript. YouTube n'accepte que des secondes entières : on ARRONDIT au plus
+ * proche (un chapitre aligné à 3:19,6 doit s'afficher 3:20, jamais 3:19).
+ */
 export function fmtTs(total: number): string {
-  const s = Math.max(0, Math.floor(total));
+  const s = Math.max(0, Math.round(total));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
@@ -36,7 +52,10 @@ export function fmtTs(total: number): string {
     : `${m}:${String(sec).padStart(2, '0')}`;
 }
 
-/** Regroupe le transcript en blocs de `bucket` secondes pour limiter les tokens */
+/**
+ * Regroupe le transcript en blocs de `bucket` secondes : repli historique,
+ * utilisé seulement quand aucun mot horodaté n'est disponible.
+ */
 function condense(segs: { startSec: number; text: string }[], bucket = 20): string {
   const groups = new Map<number, string[]>();
   for (const s of segs) {
@@ -50,7 +69,25 @@ function condense(segs: { startSec: number; text: string }[], bucket = 20): stri
     .join('\n');
 }
 
-export type Proposed = { startSec: number; title: string };
+/**
+ * Transcript lisible par le LLM, à horodatage PRÉCIS : une ligne par phrase,
+ * préfixée par le début EXACT de son premier mot `[m:ss.s]`. Le texte total est
+ * identique à celui d'avant (aucun mot perdu) : seuls les horodatages gagnent en
+ * précision (l'ancien découpage en blocs de 20 s quantifiait les débuts).
+ * Repli sur l'ancien regroupement par blocs si aucun mot n'est fourni.
+ */
+export function buildTranscriptLines(
+  segs: { startSec: number; text: string }[],
+  words?: Word[],
+): string {
+  if (words && words.length) {
+    const lines = groupWordsIntoSentences(words, { pauseSec: SENTENCE_PAUSE_SEC, maxChars: MAX_LINE_CHARS });
+    if (lines.length) return lines.map((l) => `[${fmtLineTs(l.startSec)}] ${l.text}`).join('\n');
+  }
+  return condense(segs);
+}
+
+export type Proposed = { startSec: number; title: string; openingWords?: string };
 
 /** Schéma JSON attendu du LLM (startSec coerçable, titre strictement string). */
 export const CHAPTERS_SCHEMA = {
@@ -63,10 +100,11 @@ export const CHAPTERS_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['startSec', 'title'],
+        required: ['startSec', 'title', 'openingWords'],
         properties: {
           startSec: { type: 'integer' },
           title: { type: 'string' },
+          openingWords: { type: 'string' },
         },
       },
     },
@@ -76,6 +114,16 @@ export const CHAPTERS_SCHEMA = {
 /** Alias de clés tolérés : les providers routés dérivent (snake_case, abréviations). */
 const START_KEYS = ['startSec', 'start_sec', 'start', 'start_seconds'] as const;
 const TITLE_KEYS = ['title', 'titre'] as const;
+const OPENING_KEYS = [
+  'openingWords',
+  'opening_words',
+  'opening',
+  'startWords',
+  'start_words',
+  'firstWords',
+  'first_words',
+  'mots_ouverture',
+] as const;
 
 /** Nombre exploitable depuis un champ numérique/coercible, sinon null. */
 function toFiniteNumber(v: unknown): number | null {
@@ -101,7 +149,9 @@ const ChaptersSchema = z.object({ chapters: z.array(z.unknown()) });
 
 /**
  * Convertit un item brut du modèle en chapitre en tolérant les alias de clés
- * (`start_sec`, `start`, `start_seconds`, `titre`). `null` si inexploitable.
+ * (`start_sec`, `start`, `start_seconds`, `titre`, `opening_words`…). `null` si
+ * inexploitable. `openingWords` est OPTIONNEL : son absence n'invalide pas le
+ * chapitre (on retombe alors sur `startSec`), et il sert seulement à l'alignement.
  */
 function toProposed(item: unknown): Proposed | null {
   if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
@@ -110,7 +160,10 @@ function toProposed(item: unknown): Proposed | null {
   const rawTitle = pickAlias(rec, TITLE_KEYS);
   if (startSec === null || typeof rawTitle !== 'string') return null;
   const title = rawTitle.trim();
-  return title ? { startSec, title } : null;
+  if (!title) return null;
+  const rawOpening = pickAlias(rec, OPENING_KEYS);
+  const openingWords = typeof rawOpening === 'string' && rawOpening.trim() ? rawOpening.trim() : undefined;
+  return openingWords ? { startSec, title, openingWords } : { startSec, title };
 }
 
 /** Erreur métier : la réponse du modèle ne contient aucun JSON de chapitres exploitable. */
@@ -253,16 +306,95 @@ function rawChapters(raw: string, mode: 'first' | 'last' = 'first'): Proposed[] 
 /** Résultat d'analyse : liste finale (normalisée) + verdict d'exploitabilité. */
 export type ChapterAnalysis = { chapters: Proposed[]; usable: boolean };
 
+/** Tokens normalisés (minuscules, sans accents ni ponctuation) d'une phrase. */
+function tokenize(text: string): string[] {
+  return text.split(/\s+/).map(normalizeToken).filter(Boolean);
+}
+
+type WindowCandidate = { index: number; length: number; distance: number };
+
+/**
+ * Début aligné d'un chapitre, dans les mots du transcript :
+ * 1. fenêtre de recherche glissante, distance d'édition sur tokens normalisés ;
+ *    une fenêtre dans la tolérance (`maxDist`) est retenue, en PRÉFÉRANT
+ *    l'occurrence la plus proche du `startSec` du modèle (les phrases répétées
+ *    existent) ;
+ * 2. sinon, repli documenté : si le meilleur match PARTIEL partage au moins un
+ *    mot, on prend le DÉBUT DE LA PHRASE qui le contient ;
+ * 3. sinon, la valeur du modèle est conservée, bornée sur un début de mot.
+ * Le résultat est toujours un début de mot : jamais à l'intérieur d'un mot.
+ */
+function alignOneChapter(item: Proposed, words: Word[], tokens: string[], sentences: Sentence[]): number {
+  const llm = item.startSec;
+  const opening = item.openingWords ? tokenize(item.openingWords) : [];
+  if (!opening.length || !words.length) return snapToWordStart(llm, words);
+
+  const k = opening.length;
+  const n = tokens.length;
+  const maxDist = Math.max(1, Math.floor(k / 3));
+  const minLen = Math.max(1, k - 1);
+  const maxLen = Math.min(n, k + 1);
+  let bestFull: WindowCandidate | null = null;
+  let bestPartial: WindowCandidate | null = null;
+
+  for (let i = 0; i < n; i++) {
+    for (let len = minLen; len <= maxLen && i + len <= n; len++) {
+      const win = tokens.slice(i, i + len);
+      if (!win.some(Boolean)) continue;
+      const distance = tokenEditDistance(opening, win);
+      if (!bestPartial || distance < bestPartial.distance) bestPartial = { index: i, length: len, distance };
+      if (distance <= maxDist) {
+        const closer =
+          !bestFull ||
+          distance < bestFull.distance ||
+          (distance === bestFull.distance &&
+            Math.abs(words[i].startSec - llm) < Math.abs(words[bestFull.index].startSec - llm));
+        if (closer) bestFull = { index: i, length: len, distance };
+      }
+    }
+  }
+
+  if (bestFull) return words[bestFull.index].startSec;
+  const partial = bestPartial as WindowCandidate | null;
+  if (partial && partial.length - partial.distance >= 1) {
+    const sentence = sentences.find((s) => partial.index >= s.startWordIndex && partial.index < s.endWordIndex);
+    if (sentence) return sentence.startSec;
+  }
+  return snapToWordStart(llm, words);
+}
+
+/**
+ * Aligne les débuts de chapitre sur les mots horodatés, à partir de la phrase
+ * d'ouverture verbatim demandée au modèle. Sans mot (transcript YouTube ou repli
+ * `json`), les valeurs du modèle sont rendues telles quelles : le reste du
+ * pipeline reste inchangé.
+ */
+export function alignChapters(items: Proposed[], words: Word[]): Proposed[] {
+  if (!words.length) return items.map((c) => ({ startSec: c.startSec, title: c.title }));
+  const tokens = words.map((w) => normalizeToken(w.word));
+  const sentences = groupWordsIntoSentences(words, { pauseSec: SENTENCE_PAUSE_SEC, maxChars: MAX_LINE_CHARS });
+  return items.map((c) => ({ startSec: alignOneChapter(c, words, tokens, sentences), title: c.title }));
+}
+
 /**
  * Analyse une réponse du LLM pour une durée connue : extraction tolérante aux
- * alias, puis normalize. `usable: false` quand le modèle a produit des chapitres
- * dont aucun ne survit (0 item valide, ou tous hors durée) — à distinguer d'un
- * `{"chapters":[]}` légitime, qui reste `usable: true` avec 0 chapitre.
+ * alias, ALIGNEMENT sur les mots (si fournis), puis normalize. `usable: false`
+ * quand le modèle a produit des chapitres dont aucun ne survit (0 item valide,
+ * ou tous hors durée) — à distinguer d'un `{"chapters":[]}` légitime, qui reste
+ * `usable: true` avec 0 chapitre.
  */
-export function analyzeChaptersJson(raw: string, durationSec: number, mode: 'first' | 'last' = 'first'): ChapterAnalysis {
+export function analyzeChaptersJson(
+  raw: string,
+  durationSec: number,
+  mode: 'first' | 'last' = 'first',
+  words?: Word[],
+): ChapterAnalysis {
   const parsed = rawChapters(raw, mode);
   if (!parsed) return { chapters: [], usable: false };
-  const chapters = normalize(parsed, durationSec);
+  // Alignement AVANT normalize : on cherche l'onset exact dans les mots, puis
+  // normalize applique les garde-fous (0:00 en tête, 10 s, arrondi seconde).
+  const aligned = words && words.length ? alignChapters(parsed, words) : parsed;
+  const chapters = normalize(aligned, durationSec);
   if (isUnusable(parsed.length, chapters.length)) return { chapters: [], usable: false };
   return { chapters, usable: true };
 }
@@ -275,6 +407,12 @@ export function parseChaptersJson(raw: string): Proposed[] {
   return rawChapters(raw) ?? [];
 }
 
+/**
+ * Garde-fous YouTube : arrondi à la SECONDE LA PLUS PROCHE (jamais un
+ * troncature), 0:00 en tête, écart minimal `MIN_GAP`, bornage par la durée.
+ * `openingWords` est volontairement abandonné ici (il n'a servi qu'à
+ * l'alignement et ne doit jamais atteindre la persistance).
+ */
 export function normalize(items: Proposed[], durationSec: number): Proposed[] {
   const max = durationSec > 0 ? durationSec - MIN_GAP : Infinity;
   const sorted = items
@@ -376,12 +514,16 @@ const defaultCompleter: ChaptersCompleter = async (req) => getClient().chat.comp
 
 export type ProposeDeps = { complete?: ChaptersCompleter };
 
+/** Métadonnées du chapitrage ; `words` (optionnel) active l'alignement précis. */
+export type ProposeMeta = { title: string; durationSec: number; words?: Word[] };
+
 export async function proposeChapters(
-  meta: { title: string; durationSec: number },
+  meta: ProposeMeta,
   segs: { startSec: number; text: string }[],
   deps: ProposeDeps = {},
 ): Promise<Proposed[]> {
   const complete = deps.complete ?? defaultCompleter;
+  const words = meta.words;
 
   const system = [
     'Tu découpes des vidéos YouTube en chapitres à partir de leur transcript horodaté.',
@@ -390,9 +532,11 @@ export async function proposeChapters(
     '- Ne place JAMAIS deux chapitres à moins de 60 secondes d’écart.',
     '- Le premier chapitre commence à 0 seconde.',
     '- Un chapitre = un vrai changement de sujet ; startSec doit correspondre au début de ce sujet dans le transcript.',
+    '- Chaque ligne du transcript est préfixée par son horodatage EXACT [m:ss.s] : choisis startSec au plus près du mot où le sujet commence.',
+    '- Ajoute "openingWords" : 3 à 8 mots copiés VERBATIM dans le transcript, exactement ceux prononcés au début du chapitre (ils servent à recaler le début sur le mot précis).',
     '- Minimum 3 chapitres si la vidéo dépasse 1 minute.',
     '- Titres courts (60 caractères max), informatifs, dans la langue du transcript, sans numérotation ni emoji.',
-    '- Format strict : {"chapters":[{"startSec": <entier en secondes>, "title": "<titre>"}]} — les clés sont exactement "startSec" et "title" (jamais snake_case ni un autre nom).',
+    '- Format strict : {"chapters":[{"startSec": <entier en secondes>, "title": "<titre>", "openingWords": "<3 à 8 mots verbatim>"}]} — les clés sont exactement "startSec", "title" et "openingWords" (jamais snake_case ni un autre nom).',
     '- Réponds uniquement avec le JSON demandé.',
   ].join('\n');
 
@@ -400,7 +544,7 @@ export async function proposeChapters(
     { role: 'system', content: system },
     {
       role: 'user',
-      content: `Titre : ${meta.title}\nDurée : ${meta.durationSec}s\n\nTranscript :\n${condense(segs)}`,
+      content: `Titre : ${meta.title}\nDurée : ${meta.durationSec}s\n\nTranscript :\n${buildTranscriptLines(segs, words)}`,
     },
   ];
   const base = { model: LLM_MODEL, temperature: 0.2 };
@@ -410,14 +554,14 @@ export async function proposeChapters(
     const first = await complete({ ...base, messages, response_format: JSON_SCHEMA_FORMAT });
     const firstMessage = first.choices?.[0]?.message;
     // `content` reste autoritaire dès qu'il est exploitable.
-    const fromContent = analyzeChaptersJson(firstMessage?.content ?? '', meta.durationSec);
+    const fromContent = analyzeChaptersJson(firstMessage?.content ?? '', meta.durationSec, 'first', words);
     if (fromContent.usable) return fromContent.chapters;
     // Forme documentée par la probe live : `content:"[0]"` avec le JSON réel dans
     // le `reasoning` du MÊME appel → exploité ici, sans payer un second appel.
     // Le scratchpad est lu en partant de la FIN : l'exemple illustratif vient
     // avant la réponse finale. Un dernier objet sans chapitre exploitable est
     // rejeté (on poursuit vers json_object).
-    const fromReasoning = analyzeChaptersJson(firstMessage?.reasoning ?? '', meta.durationSec, 'last');
+    const fromReasoning = analyzeChaptersJson(firstMessage?.reasoning ?? '', meta.durationSec, 'last', words);
     if (fromReasoning.usable) return fromReasoning.chapters;
   } catch (err) {
     if (!shouldFallbackToJsonObject(err)) throw err;
@@ -430,11 +574,11 @@ export async function proposeChapters(
     response_format: { type: 'json_object' },
   });
   const message = second.choices?.[0]?.message;
-  const fromSecondContent = analyzeChaptersJson(message?.content ?? '', meta.durationSec);
+  const fromSecondContent = analyzeChaptersJson(message?.content ?? '', meta.durationSec, 'first', words);
   if (fromSecondContent.usable) return fromSecondContent.chapters;
   // Dernier recours : certains modèles (raisonneurs) déposent le JSON réel dans
   // `reasoning` en laissant `content` inutilisable (même lecture depuis la fin).
-  const fromSecondReasoning = analyzeChaptersJson(message?.reasoning ?? '', meta.durationSec, 'last');
+  const fromSecondReasoning = analyzeChaptersJson(message?.reasoning ?? '', meta.durationSec, 'last', words);
   if (fromSecondReasoning.usable) return fromSecondReasoning.chapters;
 
   throw new UnusableChapterOutputError(
