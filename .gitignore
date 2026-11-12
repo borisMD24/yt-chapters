@@ -1,3 +1,5 @@
 node_modules
 .env
 data/*.db*
+# Cache d'envoi runtime (médias de l'utilisateur) : jamais versionné.
+data/uploads/
