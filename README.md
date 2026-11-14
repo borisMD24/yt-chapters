@@ -132,8 +132,9 @@ de `Démarrer.cmd` : mêmes étapes, mêmes garde-fous.
      défaut). Sur **Apple Silicon**, il télécharge le **paquet officiel signé et
      notarisé** (`Homebrew.pkg`, ~150 Mo) et l'installe via **un seul dialogue
      macOS** qui demande le mot de passe administrateur ; sur Intel (ou si le
-     paquet échoue), il exécute le **script officiel** de Homebrew, qui demande
-     le mot de passe dans le Terminal ;
+     paquet échoue), il **tente** le **script officiel** de Homebrew (mot de
+     passe dans le Terminal) — si Homebrew ne prend plus en charge ce Mac
+     (certains Mac Intel), il renvoie vers l'installation manuelle ;
    - puis il propose `brew install ffmpeg` (là aussi, refus par défaut) ;
    - sinon il ouvre <https://ffmpeg.org/download.html> et indique quoi installer
      et où le placer (`PATH`).
@@ -246,7 +247,8 @@ lanceur macOS comme acquis :
 6. **Installation de Homebrew.** Sur un Mac **sans** Homebrew, double-cliquez :
    sur **Apple Silicon**, le paquet signé doit s'installer après **un seul**
    dialogue de mot de passe (puis `ffmpeg` sans nouvelle demande) ; sur **Intel**,
-   le script officiel doit demander le mot de passe dans le Terminal. Vérifiez
+   le script officiel est tenté (mot de passe dans le Terminal, ou Homebrew
+   refuse le Mac et le lanceur renvoie vers l'installation manuelle). Vérifiez
    aussi qu'un **refus** n'installe rien.
 
 > Rappel de la réserve ci-dessus : **le lanceur macOS n'a pas encore été exécuté

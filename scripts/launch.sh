@@ -276,6 +276,10 @@ HOMEBREW_PKG_URL='https://github.com/Homebrew/brew/releases/latest/download/Home
 # stdin n'est PAS un terminal — il doit donc garder stdin branché sur le Terminal.
 HOMEBREW_INSTALL_URL='https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh'
 
+# Fichier temporaire de l'installation Homebrew en cours. Nettoyé par les chemins
+# d'erreur ET par le trap EXIT (`cleanup_server`), y compris sur Ctrl-C.
+HOMEBREW_TMP=''
+
 # Vrai sur un Mac Apple Silicon (arm64). Neutralisable par les tests via
 # CKR_TEST_ARCH (comme CKR_TEST_OS), faute de pouvoir changer d'architecture.
 is_apple_silicon() {
@@ -312,6 +316,7 @@ install_homebrew_pkg() {
     say 'MANQUANT' 'Impossible de créer un fichier temporaire pour le paquet Homebrew.'
     return 1
   fi
+  HOMEBREW_TMP="$tmp"
   say 'INFO' 'Téléchargement du paquet Homebrew (environ 150 Mo)…'
   if ! "$(curl_bin)" -fL --retry 2 -o "$tmp" "$HOMEBREW_PKG_URL"; then
     rm -f "$tmp" 2>/dev/null || true
@@ -323,7 +328,9 @@ install_homebrew_pkg() {
   local out code
   out="$(osascript \
     -e 'on run argv' \
+    -e 'with timeout of 600 seconds' \
     -e 'do shell script "/usr/sbin/installer -pkg " & quoted form of (item 1 of argv) & " -target /" with administrator privileges' \
+    -e 'end timeout' \
     -e 'end run' \
     "$tmp" 2>&1)"
   code=$?
@@ -352,6 +359,7 @@ install_homebrew_script() {
     say 'MANQUANT' 'Impossible de créer un fichier temporaire pour le script Homebrew.'
     return 1
   fi
+  HOMEBREW_TMP="$tmp"
   say 'INFO' 'Téléchargement du script officiel de Homebrew…'
   if ! "$(curl_bin)" -fsSL -o "$tmp" "$HOMEBREW_INSTALL_URL"; then
     say 'MANQUANT' 'Téléchargement du script Homebrew impossible (réseau).'
@@ -384,18 +392,22 @@ ensure_homebrew() {
   if is_apple_silicon; then
     say 'INFO' 'Installation de Homebrew via le paquet officiel signé (Apple Silicon).'
     install_homebrew_pkg || say 'INFO' 'Le paquet a échoué : nouvelle tentative avec le script officiel.'
+    # Le dossier Homebrew peut n’apparaître qu’APRÈS le paquet : on rafraîchit le
+    # PATH AVANT de décider d’un repli, sinon on relancerait le script (et une
+    # SECONDE demande de mot de passe) alors que `brew` est déjà installé.
+    refresh_path
   fi
   if ! command_available brew; then
     install_homebrew_script
+    refresh_path
   fi
 
-  refresh_path
   if command_available brew; then
     say 'OK' 'Homebrew est maintenant disponible.'
     return 0
   fi
-  say 'MANQUANT' 'Homebrew n’est pas utilisable dans cette fenêtre (installation incomplète ou PATH non rafraîchi).'
-  say 'MANQUANT' 'Fermez cette fenêtre, puis relancez Démarrer.command après une éventuelle installation manuelle.'
+  say 'MANQUANT' 'Homebrew n’a pas pu être installé automatiquement (ou n’est pas encore visible dans cette fenêtre).'
+  say 'MANQUANT' 'Fermez cette fenêtre, puis relancez Démarrer.command ; sinon, installez Homebrew depuis https://brew.sh.'
   return 1
 }
 
@@ -1027,6 +1039,10 @@ stop_server() {
 cleanup_server() {
   if [ "$SERVER_STOPPED" = 1 ]; then return 0; fi
   SERVER_STOPPED=1
+  # Fichier temporaire d'installation Homebrew (Ctrl-C pendant un téléchargement).
+  if [ -n "${HOMEBREW_TMP:-}" ]; then
+    rm -f "$HOMEBREW_TMP" 2>/dev/null || true
+  fi
   if server_alive; then
     log_line 'EXIT' 'Trap EXIT exécuté : un serveur tournait encore, arrêt du groupe de processus.'
     say 'INFO' 'Arrêt du serveur…'

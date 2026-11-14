@@ -477,7 +477,7 @@ while [ "$i" -lt 6000 ]; do
 done
 `;
 
-function makeFixture(name: string, opts: { lock?: boolean; omitFakes?: string[] } = {}): Fixture {
+function makeFixture(name: string, opts: { lock?: boolean; omitFakes?: string[]; omitBrewBin?: boolean } = {}): Fixture {
   const dir = mkdtempSync(join(tmpdir(), `ckr-mac-${name}-`));
   // Le journal des doublures vit HORS du projet factice : il ne doit jamais être
   // compté comme un artefact créé par le lanceur (mode --check notamment).
@@ -500,7 +500,10 @@ function makeFixture(name: string, opts: { lock?: boolean; omitFakes?: string[] 
   writeFake(brewSrcDir, 'ffprobe', FAKES.ffprobe);
   writeFake(brewSrcDir, 'brew', FAKES.brew);
   const brewBinDir = join(dir, 'brewbin');
-  mkdirSync(brewBinDir, { recursive: true });
+  // `omitBrewBin` : le dossier Homebrew n'existe PAS au démarrage (cas réel d'un
+  // Mac sans Homebrew). C'est l'installateur factice qui le crée ; le lanceur doit
+  // alors rafraîchir son PATH AVANT de décider d'un repli.
+  if (!opts.omitBrewBin) mkdirSync(brewBinDir, { recursive: true });
   const grandchildScript = join(dir, 'grandchild.sh');
   writeFileSync(grandchildScript, GRANDCHILD, 'utf8');
   try {
@@ -1063,7 +1066,7 @@ test('Homebrew absent : consentement refusé par défaut ⇒ aucun téléchargem
 });
 
 test('Homebrew absent (Apple Silicon) : « o » ⇒ paquet signé, dialogue admin, puis ffmpeg', { skip: skipNoBash }, () => {
-  const fx = makeFixture('brew-pkg', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'] });
+  const fx = makeFixture('brew-pkg', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'], omitBrewBin: true });
   addHomebrewFakes(fx);
   const r = runLaunch(fx, ['--install-only', '--no-browser'], { input: 'o\no\n', env: homebrewEnv(fx) });
   const out = outputOf(r);
@@ -1071,13 +1074,14 @@ test('Homebrew absent (Apple Silicon) : « o » ⇒ paquet signé, dialogue admi
   const log = readFakeLog(fx);
   assert.match(log, /curl .*Homebrew\.pkg/, 'le paquet officiel doit être téléchargé');
   assert.match(log, /osascript /, 'le dialogue administrateur doit être demandé');
+  assert.doesNotMatch(log, /install\.sh/, 'un paquet réussi ne doit PAS déclencher le script (un seul mot de passe)');
   assert.ok(existsSync(join(fx.brewBin, 'brew')), 'brew doit être disponible après le paquet');
   assert.match(log, /^brew install ffmpeg$/m, 'ffmpeg doit être installé');
   assert.ok(existsSync(join(fx.dir, 'data', 'install.json')), 'la phase d’installation doit aller au bout');
 });
 
 test('Homebrew absent (Intel) : pas de paquet Apple Silicon, repli sur le script officiel', { skip: skipNoBash }, () => {
-  const fx = makeFixture('brew-intel', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'] });
+  const fx = makeFixture('brew-intel', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'], omitBrewBin: true });
   addHomebrewFakes(fx);
   const r = runLaunch(fx, ['--install-only', '--no-browser'], {
     input: 'o\no\n',
@@ -1093,7 +1097,7 @@ test('Homebrew absent (Intel) : pas de paquet Apple Silicon, repli sur le script
 });
 
 test('Homebrew : paquet en échec ⇒ repli automatique sur le script officiel', { skip: skipNoBash }, () => {
-  const fx = makeFixture('brew-pkg-fail', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'] });
+  const fx = makeFixture('brew-pkg-fail', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'], omitBrewBin: true });
   addHomebrewFakes(fx);
   const r = runLaunch(fx, ['--install-only', '--no-browser'], {
     input: 'o\no\n',
