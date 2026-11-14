@@ -490,9 +490,8 @@ refresh_path() {
   return 0
 }
 
-# Exécute npm dans la racine du projet : sortie capturée PUIS affichée (comme le
-# fait le lanceur PowerShell), journalisée, et conservée dans NPM_OUT / NPM_CODE
-# pour les diagnostics (« pourquoi db:push a échoué ? »).
+# Exécute npm dans la racine du projet : sortie affichée EN DIRECT et conservée
+# (NPM_OUT / NPM_CODE) pour les diagnostics (« pourquoi db:push a échoué ? »).
 NPM_OUT=''
 NPM_CODE=0
 NPM_TMP=''
