@@ -53,11 +53,15 @@ export type ChapterPromptValidation = { ok: true } | { ok: false; message: strin
  */
 export function validateChapterPrompt(raw: unknown): ChapterPromptValidation {
   const value = typeof raw === 'string' ? raw : '';
-  if (!value.trim()) return { ok: false, message: CHAPTER_PROMPT_EMPTY_MESSAGE };
-  if (value.trim().length < MIN_CHAPTER_PROMPT_LENGTH) {
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: false, message: CHAPTER_PROMPT_EMPTY_MESSAGE };
+  if (trimmed.length < MIN_CHAPTER_PROMPT_LENGTH) {
     return { ok: false, message: CHAPTER_PROMPT_TOO_SHORT_MESSAGE };
   }
-  if (value.length > MAX_CHAPTER_PROMPT_LENGTH) {
+  // Bornes mesurées sur la valeur NETTOYÉE dans les deux cas : un texte utile de
+  // `MAX` caractères reste accepté même entouré d'espaces (la valeur stockée est
+  // de toute façon `trim()`ée).
+  if (trimmed.length > MAX_CHAPTER_PROMPT_LENGTH) {
     return { ok: false, message: CHAPTER_PROMPT_TOO_LONG_MESSAGE };
   }
   return { ok: true };
