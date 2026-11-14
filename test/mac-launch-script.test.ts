@@ -9,10 +9,12 @@
 //     `sudo`) + le BIT EXÉCUTABLE posé dans l'index git.
 //  2. LOGIQUE — le script est réellement exécuté, mais sous Git Bash, dans un
 //     PROJET FACTICE (dossier temporaire) avec des commandes FACTICES en tête de
-//     PATH (`node`, `npm`, `ffmpeg`, `ffprobe`, `brew`, `open`, `lsof`) qui
-//     journalisent leurs appels. La détection d'OS est neutralisée par
-//     `CKR_TEST_OS=Darwin`. AUCUN accès réseau : la sonde de disponibilité est
-//     servie par un vrai petit serveur HTTP local.
+//     PATH (`node`, `npm`, `ffmpeg`, `ffprobe`, `brew`, `open`, `lsof`, et pour
+//     l'installation de Homebrew `curl`/`osascript`) qui journalisent leurs
+//     appels. La détection d'OS et d'architecture est neutralisée par
+//     `CKR_TEST_OS=Darwin` et `CKR_TEST_ARCH`. AUCUN accès réseau : la sonde de
+//     disponibilité est servie par un vrai petit serveur HTTP local, et `curl`
+//     est remplacé par une doublure (`CKR_CURL_BIN`).
 //
 // LIMITE ASSUMÉE (écrite noir sur blanc) : ces tests de logique s'exécutent ici
 // sous Git Bash (bash 5) sur Windows. Ils prouvent la LOGIQUE du script, PAS son
@@ -403,6 +405,42 @@ for a in "$@"; do last="$a"; done
 if [ -n "$last" ]; then echo mp3 > "$last"; fi
 exit 0`;
 
+// Doublures pour l'installation AUTOMATIQUE de Homebrew. Jamais présentes par
+// défaut : le vrai `curl` sert aux sondes /local/health des tests de serveur.
+const CURL_FAKE = `log "curl $*"
+out=''; url=''; want_out=0
+for a in "$@"; do
+  case "$a" in
+    -o) want_out=1 ;;
+    -*) ;;
+    *) if [ "$want_out" = 1 ]; then out="$a"; want_out=0; else url="$a"; fi ;;
+  esac
+done
+if [ -n "\${CKR_FAKE_CURL_FAIL:-}" ]; then echo "fake curl: reseau indisponible" >&2; exit 6; fi
+if [ -z "$out" ]; then echo "fake curl: -o attendu" >&2; exit 2; fi
+case "$url" in
+  *Homebrew.pkg)
+    printf 'PKG-FACTICE' > "$out" ;;
+  *)
+    {
+      echo '#!/bin/sh'
+      echo 'echo "==> Installation Homebrew (factice)"'
+      echo 'mkdir -p "$CKR_FAKE_HOMEBREW_DIR"'
+      echo 'cp "$CKR_FAKE_BREW_SRC" "$CKR_FAKE_HOMEBREW_DIR/brew"'
+      echo 'chmod +x "$CKR_FAKE_HOMEBREW_DIR/brew"'
+    } > "$out" ;;
+esac
+exit 0`;
+
+const OSASCRIPT_FAKE = `log "osascript $*"
+if [ -n "\${CKR_FAKE_OSASCRIPT_FAIL:-}" ]; then echo "fake osascript: annule" >&2; exit 1; fi
+if [ -n "\${CKR_FAKE_HOMEBREW_DIR:-}" ] && [ -n "\${CKR_FAKE_BREW_SRC:-}" ]; then
+  mkdir -p "$CKR_FAKE_HOMEBREW_DIR"
+  cp "$CKR_FAKE_BREW_SRC" "$CKR_FAKE_HOMEBREW_DIR/brew"
+  chmod +x "$CKR_FAKE_HOMEBREW_DIR/brew"
+fi
+exit 0`;
+
 function writeFake(binDir: string, name: string, body: string): void {
   const file = join(binDir, name);
   const header = '#!/bin/sh\nlog() { if [ -n "${CKR_FAKE_LOG:-}" ]; then printf \'%s\\n\' "$*" >>"$CKR_FAKE_LOG"; fi; }\n';
@@ -422,6 +460,8 @@ type Fixture = {
   brewBin: string;
   ffmpegSrc: string;
   ffprobeSrc: string;
+  /** Faux binaire `brew`, copié par l'installateur factice de Homebrew. */
+  brewSrc: string;
   /** Petit-fils factice : il écrit un battement de cœur en boucle. */
   grandchildScript: string;
   heartbeat: string;
@@ -458,6 +498,7 @@ function makeFixture(name: string, opts: { lock?: boolean; omitFakes?: string[] 
   mkdirSync(brewSrcDir, { recursive: true });
   writeFake(brewSrcDir, 'ffmpeg', FAKES.ffmpeg);
   writeFake(brewSrcDir, 'ffprobe', FAKES.ffprobe);
+  writeFake(brewSrcDir, 'brew', FAKES.brew);
   const brewBinDir = join(dir, 'brewbin');
   mkdirSync(brewBinDir, { recursive: true });
   const grandchildScript = join(dir, 'grandchild.sh');
@@ -474,6 +515,7 @@ function makeFixture(name: string, opts: { lock?: boolean; omitFakes?: string[] 
     brewBin: brewBinDir,
     ffmpegSrc: join(brewSrcDir, 'ffmpeg'),
     ffprobeSrc: join(brewSrcDir, 'ffprobe'),
+    brewSrc: join(brewSrcDir, 'brew'),
     grandchildScript,
     heartbeat: join(dir, 'heartbeat.txt'),
   };
@@ -957,6 +999,139 @@ test('consentement ffmpeg : refus (entrée fermée) ⇒ ZÉRO appel à brew', { 
   assert.ok(!existsSync(join(fx.dir, 'data', 'install.json')), 'aucune installation ne doit être enregistrée');
   assert.match(out, /ffmpeg\.org\/download\.html/, 'la page de téléchargement macOS doit être proposée');
   assert.match(out, /introuvable/, 'le diagnostic explique que les outils manquent');
+});
+
+// ---------------------------------------------------------------------------
+// Homebrew absent : installation automatique (paquet signé, script en repli)
+// ---------------------------------------------------------------------------
+
+/** Ajoute les doublures `curl`/`osascript` (jamais présentes par défaut : le vrai
+ *  `curl` sert aux sondes /local/health des tests de serveur). */
+function addHomebrewFakes(fx: Fixture): void {
+  writeFake(fx.binDir, 'curl', CURL_FAKE);
+  writeFake(fx.binDir, 'osascript', OSASCRIPT_FAKE);
+}
+
+/** Environnement commun aux scénarios d'installation de Homebrew. */
+function homebrewEnv(fx: Fixture, extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    CKR_TEST_ARCH: 'arm64',
+    // Git Bash injecte un vrai `curl` en tête de PATH : on cible explicitement
+    // la doublure (couture de test, sans effet en production).
+    CKR_CURL_BIN: toPosix(join(fx.binDir, 'curl')),
+    CKR_BREW_BIN_DIRS: toPosix(fx.brewBin),
+    CKR_FAKE_HOMEBREW_DIR: toPosix(fx.brewBin),
+    CKR_FAKE_BREW_SRC: toPosix(fx.brewSrc),
+    CKR_FAKE_INSTALL_DIR: toPosix(fx.brewBin),
+    CKR_FAKE_FFMPEG_SRC: toPosix(fx.ffmpegSrc),
+    CKR_FAKE_FFPROBE_SRC: toPosix(fx.ffprobeSrc),
+    ...extra,
+  };
+}
+
+test('Homebrew absent : source (URLs officielles, consentement, aucun sudo)', () => {
+  const source = readFileSync(shPath, 'utf8');
+  assert.ok(
+    source.includes('https://github.com/Homebrew/brew/releases/latest/download/Homebrew.pkg'),
+    'URL stable du paquet officiel attendue',
+  );
+  assert.ok(
+    source.includes('https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh'),
+    'script officiel en repli attendu',
+  );
+  assert.ok(source.includes('ensure_homebrew'), 'helper d’installation attendu');
+  assert.match(source, /read_consent 'Installer Homebrew maintenant/, 'consentement explicite exigé');
+  // Aucune invocation DIRECTE de sudo (les commentaires de ligne sont retirés).
+  const code = codeOf(source);
+  assert.ok(!/^\s*sudo\b/m.test(code), 'aucune commande sudo en début de ligne');
+  assert.ok(!/[;&|(]\s*sudo\b/.test(code), 'aucune commande sudo chaînée');
+});
+
+test('Homebrew absent : consentement refusé par défaut ⇒ aucun téléchargement, aucun brew', { skip: skipNoBash }, () => {
+  for (const input of ['', '\n', 'q\n']) {
+    const fx = makeFixture('brew-refuse', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'] });
+    addHomebrewFakes(fx);
+    const r = runLaunch(fx, ['--install-only', '--no-browser'], { input, env: homebrewEnv(fx) });
+    const out = outputOf(r);
+    assert.notEqual(r.status, 0, `refus (${JSON.stringify(input)}) ⇒ arrêt\n${out}`);
+    const log = readFakeLog(fx);
+    assert.ok(!log.includes('curl '), 'refus ⇒ aucun téléchargement');
+    assert.ok(!log.includes('osascript '), 'refus ⇒ aucun dialogue administrateur');
+    assert.ok(!log.includes('brew '), 'refus ⇒ aucun brew');
+    assert.match(norm(out), /brew\.sh/, 'la page Homebrew doit être proposée en repli');
+  }
+});
+
+test('Homebrew absent (Apple Silicon) : « o » ⇒ paquet signé, dialogue admin, puis ffmpeg', { skip: skipNoBash }, () => {
+  const fx = makeFixture('brew-pkg', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'] });
+  addHomebrewFakes(fx);
+  const r = runLaunch(fx, ['--install-only', '--no-browser'], { input: 'o\no\n', env: homebrewEnv(fx) });
+  const out = outputOf(r);
+  assert.equal(r.status, 0, out);
+  const log = readFakeLog(fx);
+  assert.match(log, /curl .*Homebrew\.pkg/, 'le paquet officiel doit être téléchargé');
+  assert.match(log, /osascript /, 'le dialogue administrateur doit être demandé');
+  assert.ok(existsSync(join(fx.brewBin, 'brew')), 'brew doit être disponible après le paquet');
+  assert.match(log, /^brew install ffmpeg$/m, 'ffmpeg doit être installé');
+  assert.ok(existsSync(join(fx.dir, 'data', 'install.json')), 'la phase d’installation doit aller au bout');
+});
+
+test('Homebrew absent (Intel) : pas de paquet Apple Silicon, repli sur le script officiel', { skip: skipNoBash }, () => {
+  const fx = makeFixture('brew-intel', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'] });
+  addHomebrewFakes(fx);
+  const r = runLaunch(fx, ['--install-only', '--no-browser'], {
+    input: 'o\no\n',
+    env: homebrewEnv(fx, { CKR_TEST_ARCH: 'x86_64' }),
+  });
+  const out = outputOf(r);
+  assert.equal(r.status, 0, out);
+  const log = readFakeLog(fx);
+  assert.doesNotMatch(log, /Homebrew\.pkg/, 'Intel : aucun paquet Apple Silicon');
+  assert.match(log, /curl .*install\.sh/, 'le script officiel doit être téléchargé');
+  assert.ok(existsSync(join(fx.brewBin, 'brew')), 'brew doit être disponible après le script');
+  assert.match(log, /^brew install ffmpeg$/m, 'ffmpeg doit être installé');
+});
+
+test('Homebrew : paquet en échec ⇒ repli automatique sur le script officiel', { skip: skipNoBash }, () => {
+  const fx = makeFixture('brew-pkg-fail', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'] });
+  addHomebrewFakes(fx);
+  const r = runLaunch(fx, ['--install-only', '--no-browser'], {
+    input: 'o\no\n',
+    env: homebrewEnv(fx, { CKR_FAKE_OSASCRIPT_FAIL: '1' }),
+  });
+  const out = outputOf(r);
+  assert.equal(r.status, 0, out);
+  const log = readFakeLog(fx);
+  assert.match(log, /curl .*Homebrew\.pkg/, 'le paquet est tenté');
+  assert.match(log, /curl .*install\.sh/, 'le script officiel prend le relais');
+  assert.ok(existsSync(join(fx.brewBin, 'brew')), 'brew finit par être installé');
+  assert.match(log, /^brew install ffmpeg$/m, 'ffmpeg doit être installé');
+});
+
+test('Homebrew : réseau indisponible ⇒ repli manuel propre, aucun crash', { skip: skipNoBash }, () => {
+  const fx = makeFixture('brew-curl-fail', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'] });
+  addHomebrewFakes(fx);
+  const r = runLaunch(fx, ['--install-only', '--no-browser'], {
+    input: 'o\n',
+    env: homebrewEnv(fx, { CKR_FAKE_CURL_FAIL: '1' }),
+  });
+  const out = outputOf(r);
+  assert.notEqual(r.status, 0, out);
+  const log = readFakeLog(fx);
+  assert.ok(!log.includes('brew install'), 'aucune installation ne doit être tentée');
+  assert.match(norm(out), /ffmpeg\.org\/download\.html/, 'le repli manuel ffmpeg est proposé');
+  assert.ok(!existsSync(join(fx.brewBin, 'brew')), 'aucun brew ne doit apparaître');
+});
+
+test('--check avec Homebrew absent : aucun téléchargement ni installation', { skip: skipNoBash }, () => {
+  const fx = makeFixture('brew-check', { omitFakes: ['brew'] });
+  addHomebrewFakes(fx);
+  const r = runLaunch(fx, ['--check'], { env: homebrewEnv(fx) });
+  assert.equal(r.status, 0, outputOf(r));
+  const log = readFakeLog(fx);
+  assert.ok(!log.includes('curl '), '--check ne télécharge rien');
+  assert.ok(!log.includes('osascript '), '--check n’ouvre aucun dialogue');
+  assert.ok(!log.includes('brew '), '--check ne lance pas brew');
 });
 
 // ---------------------------------------------------------------------------

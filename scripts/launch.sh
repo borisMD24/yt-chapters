@@ -260,6 +260,145 @@ repo_revision() {
   printf '%s' "$rev"
 }
 
+# ---------------------------------------------------------------------------
+# Homebrew : installation automatique (démarrage « un clic », rien à taper)
+# ---------------------------------------------------------------------------
+
+# Paquet officiel SIGNÉ et notarisé par Homebrew (Apple Silicon, macOS 15+). URL
+# stable « latest » (janvier 2026) : elle redirige vers la dernière version. Un
+# SEUL dialogue macOS y demande le mot de passe administrateur, puis
+# l'installation est silencieuse : c'est la voie la plus simple pour un non
+# technicien (aucune frappe dans le Terminal).
+HOMEBREW_PKG_URL='https://github.com/Homebrew/brew/releases/latest/download/Homebrew.pkg'
+
+# Script officiel (repli : Intel, macOS ancien, ou paquet en échec). ATTENTION :
+# le script se met en mode « non interactif » (et échoue faute de sudo) dès que
+# stdin n'est PAS un terminal — il doit donc garder stdin branché sur le Terminal.
+HOMEBREW_INSTALL_URL='https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh'
+
+# Vrai sur un Mac Apple Silicon (arm64). Neutralisable par les tests via
+# CKR_TEST_ARCH (comme CKR_TEST_OS), faute de pouvoir changer d'architecture.
+is_apple_silicon() {
+  case "${CKR_TEST_ARCH:-$(uname -m)}" in
+    arm64|aarch64) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Binaire `curl` utilisé pour les téléchargements. `CKR_CURL_BIN` n'existe que
+# pour les TESTS : sous Git Bash, un `curl` réel est injecté en TÊTE du PATH et
+# masquerait la doublure. En production, c'est simplement `curl` du PATH.
+curl_bin() {
+  if [ -n "${CKR_CURL_BIN:-}" ]; then printf '%s' "$CKR_CURL_BIN"; else printf '%s' 'curl'; fi
+}
+curl_available() { command_available "$(curl_bin)"; }
+
+# Voie Apple Silicon : télécharge le paquet officiel signé, puis l'installe via un
+# UNIQUE dialogue macOS natif (`osascript … with administrator privileges`).
+# Renvoie 0 si l'installation se termine sans erreur. Notre script n'appelle
+# JAMAIS `sudo` : c'est macOS qui élève les privilèges, avec son propre dialogue.
+install_homebrew_pkg() {
+  if ! curl_available; then
+    say 'MANQUANT' '« curl » est introuvable : téléchargement du paquet impossible.'
+    return 1
+  fi
+  if ! command_available osascript; then
+    say 'MANQUANT' '« osascript » est introuvable : installation automatique impossible.'
+    return 1
+  fi
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/ckr-homebrew-pkg.XXXXXX" 2>/dev/null)" || tmp=''
+  if [ -z "$tmp" ]; then
+    say 'MANQUANT' 'Impossible de créer un fichier temporaire pour le paquet Homebrew.'
+    return 1
+  fi
+  say 'INFO' 'Téléchargement du paquet Homebrew (environ 150 Mo)…'
+  if ! "$(curl_bin)" -fL --retry 2 -o "$tmp" "$HOMEBREW_PKG_URL"; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  say 'INFO' 'Validez le mot de passe administrateur dans la fenêtre macOS qui s’ouvre.'
+  # `quoted form of` protège le chemin ; on passe le chemin en argument (jamais
+  # interpolé dans le script AppleScript) pour éviter tout problème de citation.
+  local out code
+  out="$(osascript \
+    -e 'on run argv' \
+    -e 'do shell script "/usr/sbin/installer -pkg " & quoted form of (item 1 of argv) & " -target /" with administrator privileges' \
+    -e 'end run' \
+    "$tmp" 2>&1)"
+  code=$?
+  rm -f "$tmp" 2>/dev/null || true
+  if [ "$code" -eq 0 ]; then
+    say 'OK' 'Paquet Homebrew installé.'
+    return 0
+  fi
+  if [ -n "$out" ]; then log_line 'BREW' "osascript: $out"; fi
+  say 'MANQUANT' 'L’installation du paquet Homebrew n’a pas abouti (annulée ou en échec).'
+  return 1
+}
+
+# Repli : script officiel de Homebrew, exécuté EN INTERACTIF. stdin reste branché
+# sur le Terminal (sans quoi le script basculerait en « non interactif » et
+# échouerait faute de sudo) ; la sortie défile en direct et reste journalisée.
+# Renvoie 0 si le script a pu être lancé (l'appelant revérifie ensuite `brew`).
+install_homebrew_script() {
+  if ! curl_available; then
+    say 'MANQUANT' '« curl » est introuvable : téléchargement du script impossible.'
+    return 1
+  fi
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/ckr-homebrew-sh.XXXXXX" 2>/dev/null)" || tmp=''
+  if [ -z "$tmp" ]; then
+    say 'MANQUANT' 'Impossible de créer un fichier temporaire pour le script Homebrew.'
+    return 1
+  fi
+  say 'INFO' 'Téléchargement du script officiel de Homebrew…'
+  if ! "$(curl_bin)" -fsSL -o "$tmp" "$HOMEBREW_INSTALL_URL"; then
+    say 'MANQUANT' 'Téléchargement du script Homebrew impossible (réseau).'
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  say 'INFO' 'Le script officiel peut demander votre mot de passe administrateur, puis un appui sur Entrée.'
+  local line
+  /bin/bash "$tmp" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line"
+    log_line 'BREW' "$line"
+  done
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
+# Rend Homebrew utilisable, en l'installant si besoin APRÈS CONSENTEMENT EXPLICITE
+# (défaut = refuser). Renvoie 0 si `brew` est disponible à l'issue. N'appelle
+# jamais `sudo` : l'élévation passe par macOS (dialogue d'`osascript`) ou par le
+# script officiel de Homebrew lui-même.
+ensure_homebrew() {
+  if command_available brew; then return 0; fi
+
+  say 'MANQUANT' 'Homebrew (« brew ») est absent : c’est lui qui installe Node.js et ffmpeg.'
+  if ! read_consent 'Installer Homebrew maintenant ? Un mot de passe administrateur sera demandé une seule fois. (o/N) '; then
+    say 'MANQUANT' 'Installation de Homebrew refusée : l’installation manuelle est expliquée ci-dessous.'
+    return 1
+  fi
+
+  if is_apple_silicon; then
+    say 'INFO' 'Installation de Homebrew via le paquet officiel signé (Apple Silicon).'
+    install_homebrew_pkg || say 'INFO' 'Le paquet a échoué : nouvelle tentative avec le script officiel.'
+  fi
+  if ! command_available brew; then
+    install_homebrew_script
+  fi
+
+  refresh_path
+  if command_available brew; then
+    say 'OK' 'Homebrew est maintenant disponible.'
+    return 0
+  fi
+  say 'MANQUANT' 'Homebrew n’est pas utilisable dans cette fenêtre (installation incomplète ou PATH non rafraîchi).'
+  say 'MANQUANT' 'Fermez cette fenêtre, puis relancez Démarrer.command après une éventuelle installation manuelle.'
+  return 1
+}
+
 # Exécute Homebrew : sa sortie défile EN DIRECT (ligne à ligne, jamais bufferisée
 # jusqu'à la fin — une installation dure plusieurs minutes et un lanceur muet
 # paraîtrait figé), et chaque ligne reste journalisée dans logs/demarrage-*.log.
@@ -930,9 +1069,9 @@ do_start() {
       say 'MANQUANT' 'Node.js est introuvable sur cet ordinateur (20 minimum requis).'
     fi
 
-    if ! command_available brew; then
-      say 'ERREUR' "Homebrew (« brew ») n'est pas disponible : impossible d'installer automatiquement."
-      say 'ERREUR' "Installez Node.js LTS sur https://nodejs.org/fr/download (ou Homebrew depuis https://brew.sh), puis relancez ce fichier."
+    if ! ensure_homebrew; then
+      say 'ERREUR' "Impossible d'installer Node.js automatiquement : Homebrew n'est pas disponible."
+      say 'ERREUR' "Installez Node.js LTS sur https://nodejs.org/fr/download, puis relancez ce fichier."
       open_url 'https://nodejs.org/fr/download'
       pause_for_reading
       return 1
@@ -975,7 +1114,7 @@ do_start() {
     say 'MANQUANT' "$missing introuvable(s) : le chapitrage local ne peut pas fonctionner sans eux."
 
     local installed=0
-    if command_available brew; then
+    if ensure_homebrew; then
       # Même règle de consentement que pour Node.js (refus par défaut).
       if read_consent "Installer $missing maintenant avec Homebrew ? (o/N) "; then
         brew_run install ffmpeg
@@ -992,8 +1131,8 @@ do_start() {
 
     if [ "$installed" != 1 ]; then
       say 'ERREUR' 'ffmpeg et ffprobe restent introuvables : installez-les manuellement.'
-      say 'INFO' 'Avec Homebrew : brew install ffmpeg. Sinon, téléchargez une version macOS sur https://ffmpeg.org/download.html'
-      say 'INFO' 'Placez les binaires « ffmpeg » et « ffprobe » dans le PATH, puis relancez Démarrer.command.'
+      say 'INFO' 'Avec Homebrew (https://brew.sh) : brew install ffmpeg.'
+      say 'INFO' 'Sinon, téléchargez une version macOS sur https://ffmpeg.org/download.html, placez « ffmpeg » et « ffprobe » dans le PATH, puis relancez Démarrer.command.'
       open_url 'https://ffmpeg.org/download.html'
       say 'MANQUANT' 'Fermez cette fenêtre, puis double-cliquez de nouveau sur Démarrer.command après installation.'
       pause_for_reading

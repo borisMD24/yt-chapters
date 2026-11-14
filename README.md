@@ -124,13 +124,23 @@ de `Démarrer.cmd` : mêmes étapes, mêmes garde-fous.
 1. **Vérifie Node.js** (20 minimum). S'il manque ou est trop ancien, il propose de
    l'installer avec **Homebrew** (`brew install node`) — **la réponse par défaut
    est de refuser** : seule une réponse explicitement affirmative (`o`, `oui`,
-   `y`, `yes`) installe. En cas de refus, d'absence de `brew` **ou d'échec de
-   l'installation**, il ouvre <https://nodejs.org/fr/download> et explique quoi
-   installer.
-2. **Vérifie `ffmpeg` et `ffprobe`.** S'ils manquent, il propose
-   `brew install ffmpeg` (là aussi, refus par défaut) ; sinon il ouvre
-   <https://ffmpeg.org/download.html> et indique quoi installer et où le placer
-   (`PATH`).
+   `y`, `yes`) installe. Si `brew` manque aussi, il propose d'abord de
+   l'installer (voir l'étape 2). En cas de refus **ou d'échec de l'installation**,
+   il ouvre <https://nodejs.org/fr/download> et explique quoi installer.
+2. **Vérifie Homebrew, `ffmpeg` et `ffprobe`.** S'ils manquent :
+   - si **Homebrew** (`brew`) est absent, il propose de l'installer (refus par
+     défaut). Sur **Apple Silicon**, il télécharge le **paquet officiel signé et
+     notarisé** (`Homebrew.pkg`, ~150 Mo) et l'installe via **un seul dialogue
+     macOS** qui demande le mot de passe administrateur ; sur Intel (ou si le
+     paquet échoue), il exécute le **script officiel** de Homebrew, qui demande
+     le mot de passe dans le Terminal ;
+   - puis il propose `brew install ffmpeg` (là aussi, refus par défaut) ;
+   - sinon il ouvre <https://ffmpeg.org/download.html> et indique quoi installer
+     et où le placer (`PATH`).
+
+   > Le Terminal reste visible, mais **rien n'est à taper** : seuls des
+   > consentements (`o`/`N`) et, au plus, le mot de passe administrateur sont
+   > demandés.
 3. **Installe les dépendances** (`npm ci`, repli `npm install`) si nécessaire.
 4. **Prépare la configuration** : `.env` créé depuis `.env.example` s'il manque.
 5. **Prépare la base** (`npm run db:push`) : si la commande échoue, il affiche les
@@ -182,20 +192,25 @@ démarre rien.
   jointe…) peut afficher « *… ne peut pas être ouvert car il provient d'un
   développeur non identifié* » : faites alors un **clic droit → Ouvrir**, puis
   confirmez.
-- Le script est **compatible bash 3.2** (c'est ce qui est livré avec macOS) et
-  n'utilise **jamais `sudo`**.
+- Le script est **compatible bash 3.2** (c'est ce qui est livré avec macOS). Il
+  **n'appelle jamais `sudo` lui-même** : l'élévation de privilèges passe par
+  macOS (dialogue d'administration d'`osascript` pour le paquet Homebrew) ou par
+  le **script officiel de Homebrew**, qui peut demander le mot de passe
+  administrateur lui-même.
 
 ### Limites et tests
 
 > **Le lanceur macOS n'a pas encore été exécuté sur un vrai Mac.** Sa logique est
 > couverte par `test/mac-launch-script.test.ts`, qui l'exécute réellement mais
 > **sous Git Bash (bash 5) sur Windows**, avec des commandes factices (`node`,
-> `npm`, `ffmpeg`, `ffprobe`, `brew`, `open`, `lsof`) et un vrai petit serveur HTTP
-> local. Ces tests prouvent la **logique** (consentement en échec-fermé, premier
-> lancement vs chemin rapide, horodatage corrompu ⇒ premier lancement, `--check`
-> sans effet de bord, échec du test de fumée ⇒ arrêt, résumé sans URL de serveur)
-> mais **pas** le comportement de `brew`, de `open`, de `lsof`, ni celui de bash
-> 3.2 : ce qu'il reste à valider sur une vraie machine.
+> `npm`, `ffmpeg`, `ffprobe`, `brew`, `open`, `lsof`, et pour Homebrew
+> `curl`/`osascript`) et un vrai petit serveur HTTP local. Ces tests prouvent la
+> **logique** (consentement en échec-fermé, installation de Homebrew par paquet
+> signé ou par script selon l'architecture, premier lancement vs chemin rapide,
+> horodatage corrompu ⇒ premier lancement, `--check` sans effet de bord, échec du
+> test de fumée ⇒ arrêt, résumé sans URL de serveur) mais **pas** le comportement
+> de `brew`, de `open`, de `lsof`, ni celui de bash 3.2 : ce qu'il reste à
+> valider sur une vraie machine.
 
 > Le **raccourci du Bureau** proposé par le lanceur Windows n'a pas d'équivalent
 > ici : sur macOS, gardez le dossier dans le Dock, ou lancez `Démarrer.command`
@@ -228,6 +243,11 @@ lanceur macOS comme acquis :
    jamais rester muet pendant plusieurs minutes.
 5. **PATH rafraîchi.** Juste après une installation, le lanceur doit retrouver
    l'outil (Node.js, `ffmpeg`) **sans** qu'on ait besoin de fermer la fenêtre.
+6. **Installation de Homebrew.** Sur un Mac **sans** Homebrew, double-cliquez :
+   sur **Apple Silicon**, le paquet signé doit s'installer après **un seul**
+   dialogue de mot de passe (puis `ffmpeg` sans nouvelle demande) ; sur **Intel**,
+   le script officiel doit demander le mot de passe dans le Terminal. Vérifiez
+   aussi qu'un **refus** n'installe rien.
 
 > Rappel de la réserve ci-dessus : **le lanceur macOS n'a pas encore été exécuté
 > sur un vrai Mac** — cette liste est précisément ce qui reste à confirmer.
