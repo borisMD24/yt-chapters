@@ -307,6 +307,28 @@ Plus besoin de toucher au `.env` : ouvrez la section d'administration.
   passe sous 1 $ — cette page n'obtient, elle, **aucun montant** : le serveur ne
   lui renvoie qu'un booléen (`low`), et la phrase affichée est sans chiffre.
 
+### Consignes du chapitrage (prompt LLM)
+
+La section « Consignes du chapitrage » permet d'**éditer les instructions
+envoyées au modèle** qui découpe une vidéo en chapitres, sans toucher au code :
+
+- un **texte libre** (densité des chapitres, définition d'un changement de sujet,
+  style des titres…) est enregistré dans la base (table `app_settings`,
+  réglage `chapter_prompt`) et **prime sur le texte par défaut** ;
+- **Réinitialiser** supprime la personnalisation : le texte par défaut du
+  programme est de nouveau utilisé ;
+- la modification s'applique aux **chapitrages suivants** (vidéo YouTube comme
+  média local) ; aucun chapitrage déjà enregistré n'est recalculé ;
+- la **partie technique** du prompt — le contrat JSON attendu
+  (`startSec`/`title`/`openingWords`) et la consigne « réponds uniquement au
+  JSON » — **reste imposée par le programme** : elle n'est pas éditable, ce qui
+  garantit qu'une mauvaise édition des consignes ne peut pas casser l'extraction
+  des chapitres.
+
+La **lecture** (`GET /admin/prompt`) est ouverte : le prompt n'est pas un
+secret. L'**écriture** et la **réinitialisation** sont, elles, réservées à
+**cet ordinateur** (boucle locale), comme la clé.
+
 Les actions d'**écriture** (enregistrer, supprimer, tester) et la **lecture des
 crédits** ne sont possibles que depuis **cet ordinateur** (boucle locale
 `127.0.0.1`/`::1`) ; toute autre adresse reçoit un `403` en français. Seules
@@ -450,6 +472,14 @@ n'est pas concerné.
   français. Une clé **d'administration** (provisioning/management) est signalée
   comme inapte à la transcription : utilisez une clé d'API normale
   (<https://openrouter.ai/settings/keys>).
+- `GET /admin/prompt` — consignes du chapitrage actives
+  (`{ text, default, source, customized, updatedAt? }`). Lecture **ouverte** (ce
+  n'est pas un secret) ; la partie technique (contrat JSON) n'y figure pas : elle
+  reste imposée par le code.
+- `PUT /admin/prompt` `{ text }` — enregistre les consignes (refus en français si
+  vide / trop courtes / trop longues).
+- `DELETE /admin/prompt` — supprime les consignes personnalisées (retour au texte
+  par défaut). `PUT` et `DELETE` sont **réservés à la boucle locale** (`403` sinon).
 - `GET /admin/credits` — crédits du compte (`usage`, `limit`, `limit_remaining`,
   `expires_at`, `fetchedAt`) mis en cache 60 s ; jamais la clé. Sans clé, aucun
   appel réseau et un message en français.
@@ -461,7 +491,8 @@ n'est pas concerné.
   chiffrée : la page compose elle-même la phrase, sans montant.
   Sont **réservées à la boucle locale** (`403` sinon) : `GET /admin/credits`,
   `POST /admin/credits/refresh`, ainsi que l'écriture et le test de la clé
-  (`PUT`/`DELETE /admin/openrouter-key`, `POST /admin/openrouter-key/test`).
+  (`PUT`/`DELETE /admin/openrouter-key`, `POST /admin/openrouter-key/test`) et
+  l'écriture des consignes (`PUT`/`DELETE /admin/prompt`).
   `GET /admin/settings` reste **ouverte en lecture** (masque de clé uniquement),
   et `/local/credits` reste lisible, sans montant.
 

@@ -191,7 +191,8 @@
         font-size: 0.95rem;
         margin-top: 18px;
       }
-      input[type='password'] {
+      input[type='password'],
+      textarea {
         font: inherit;
         color: var(--ink);
         background: var(--surface);
@@ -201,6 +202,12 @@
         width: 100%;
         max-width: 520px;
         font-family: var(--mono);
+      }
+      textarea {
+        max-width: 100%;
+        min-height: 220px;
+        resize: vertical;
+        line-height: 1.5;
       }
       .help {
         font-weight: 400;
@@ -368,6 +375,49 @@
         </div>
       </section>
 
+      <section class="step" aria-labelledby="title-prompt">
+        <h2 id="title-prompt">Consignes du chapitrage (prompt LLM)</h2>
+        <div class="card">
+          <p class="help">
+            Ce texte est envoyé au modèle qui découpe la vidéo en chapitres. Il s'applique aux chapitrages
+            <strong>suivants</strong> : aucun chapitrage déjà enregistré n'est recalculé. La partie technique (format
+            JSON attendu) reste imposée par le programme et n'est pas modifiable ici.
+          </p>
+
+          <p>
+            <span id="prompt-badge" class="badge" role="status"
+              ><span class="dot" aria-hidden="true"></span><span id="prompt-badge-text">Chargement…</span></span
+            >
+          </p>
+
+          <label class="field" for="prompt-input">
+            Consignes
+            <textarea id="prompt-input" name="chapter-prompt" spellcheck="false" aria-describedby="prompt-help"></textarea>
+            <span id="prompt-help" class="help">
+              Modifiez librement les consignes (densité des chapitres, style des titres…). Enregistrez pour les
+              appliquer, ou « Réinitialiser » pour revenir aux consignes par défaut du programme.
+            </span>
+          </label>
+
+          <div class="row-actions">
+            <button id="save-prompt" class="btn btn-primary" type="button">Enregistrer les consignes</button>
+            <button id="reset-prompt" class="btn btn-secondary" type="button">Réinitialiser</button>
+            <button id="reload-prompt" class="btn btn-secondary" type="button">Actualiser</button>
+          </div>
+
+          <div id="prompt-message" class="banner" role="status" aria-live="polite" hidden>
+            <p id="prompt-message-text"></p>
+          </div>
+
+          <dl class="facts">
+            <dt>Source</dt>
+            <dd id="prompt-source">—</dd>
+            <dt>Dernière mise à jour</dt>
+            <dd id="prompt-updated">—</dd>
+          </dl>
+        </div>
+      </section>
+
       <section class="step" aria-labelledby="title-credits">
         <h2 id="title-credits">Crédits OpenRouter</h2>
         <div class="card">
@@ -470,6 +520,16 @@
           creditsFetched: $('credits-fetched'),
           creditsRefresh: $('credits-refresh'),
           creditsNote: $('credits-note'),
+          promptBadge: $('prompt-badge'),
+          promptBadgeText: $('prompt-badge-text'),
+          promptInput: $('prompt-input'),
+          promptSource: $('prompt-source'),
+          promptUpdated: $('prompt-updated'),
+          promptSave: $('save-prompt'),
+          promptReset: $('reset-prompt'),
+          promptReload: $('reload-prompt'),
+          promptMessage: $('prompt-message'),
+          promptMessageText: $('prompt-message-text'),
         };
 
         /** Lit une réponse JSON sans planter si le corps n'est pas du JSON. */
@@ -625,12 +685,92 @@
             });
         }
 
+        /** Bandeau dédié aux consignes du chapitrage (indépendant de la clé). */
+        function setPromptMessage(text, kind) {
+          if (!text) {
+            els.promptMessage.hidden = true;
+            els.promptMessageText.textContent = '';
+            return;
+          }
+          els.promptMessage.className = 'banner' + (kind ? ' ' + kind : '');
+          els.promptMessageText.textContent = text;
+          els.promptMessage.hidden = false;
+        }
+
+        /** Rend l'état des consignes (personnalisées ou par défaut) et le texte. */
+        function renderPrompt(prompt) {
+          var p = prompt || {};
+          if (typeof p.text === 'string') els.promptInput.value = p.text;
+          var customized = !!p.customized;
+          els.promptBadge.className = 'badge' + (customized ? ' ok' : '');
+          els.promptBadgeText.textContent = customized ? 'Personnalisées' : 'Par défaut';
+          els.promptSource.textContent = customized
+            ? 'Personnalisées (enregistrées dans la base)'
+            : 'Par défaut (programme)';
+          els.promptUpdated.textContent = customized ? formatDate(p.updatedAt) : '—';
+        }
+
+        function loadPrompt() {
+          return fetch('/admin/prompt')
+            .then(readJson)
+            .then(function (res) {
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              renderPrompt(res.data || {});
+            })
+            .catch(function () {
+              setPromptMessage('Impossible de lire les consignes du chapitrage pour le moment.', 'err');
+            });
+        }
+
+        function savePrompt() {
+          var text = els.promptInput.value;
+          if (!text.trim()) {
+            setPromptMessage('Les consignes sont vides : écrivez au moins une phrase, ou cliquez sur « Réinitialiser ».', 'err');
+            return;
+          }
+          setPromptMessage('', '');
+          fetch('/admin/prompt', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: text }),
+          })
+            .then(readJson)
+            .then(function (res) {
+              if (!res.ok) {
+                var msg = (res.data && res.data.error) || "L'enregistrement a échoué.";
+                setPromptMessage(typeof msg === 'string' ? msg : "L'enregistrement a échoué.", 'err');
+                return;
+              }
+              renderPrompt((res.data && res.data.chapterPrompt) || {});
+              setPromptMessage('Consignes enregistrées : elles s’appliqueront au prochain chapitrage.', 'ok');
+            })
+            .catch(function () {
+              setPromptMessage("Impossible de contacter l'outil. Vérifiez qu'il est toujours démarré.", 'err');
+            });
+        }
+
+        function resetPrompt() {
+          setPromptMessage('', '');
+          fetch('/admin/prompt', { method: 'DELETE' })
+            .then(readJson)
+            .then(function (res) {
+              if (!res.ok) {
+                var msg = (res.data && res.data.error) || 'La réinitialisation a échoué.';
+                setPromptMessage(typeof msg === 'string' ? msg : 'La réinitialisation a échoué.', 'err');
+                return;
+              }
+              renderPrompt((res.data && res.data.chapterPrompt) || {});
+              setPromptMessage('Consignes réinitialisées : le texte par défaut du programme est de nouveau utilisé.', 'ok');
+            })
+            .catch(function () {
+              setPromptMessage("Impossible de contacter l'outil. Vérifiez qu'il est toujours démarré.", 'err');
+            });
+        }
+
         function hideLoadError() {
           els.loadError.hidden = true;
           els.loadErrorText.textContent = '';
-        }
-
-        function showLoadError(message) {
+        }        function showLoadError(message) {
           els.loadErrorText.textContent = message;
           els.loadError.hidden = false;
         }
@@ -738,8 +878,16 @@
           });
         });
 
+        els.promptSave.addEventListener('click', savePrompt);
+        els.promptReset.addEventListener('click', resetPrompt);
+        els.promptReload.addEventListener('click', function () {
+          setPromptMessage('', '');
+          loadPrompt();
+        });
+
         load();
         loadCredits(false);
+        loadPrompt();
       })();
     </script>
   </body>

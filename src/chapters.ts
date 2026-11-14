@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { z } from 'zod';
 import { resolveOpenRouterKey } from './openrouter-key';
+import { resolveChapterPrompt } from './chapter-prompt';
 import {
   fmtLineTs,
   groupWordsIntoSentences,
@@ -525,17 +526,14 @@ export async function proposeChapters(
   const complete = deps.complete ?? defaultCompleter;
   const words = meta.words;
 
+  // Consignes éditoriales éditables depuis l'administration (base d'abord, sinon
+  // défaut du code : voir `src/chapter-prompt.ts`), suivies de la PARTIE
+  // TECHNIQUE — jamais éditable — qui décrit le contrat JSON attendu par le
+  // parsing. Ce verrouillage garantit qu'une mauvaise édition des consignes ne
+  // peut pas casser l'extraction des chapitres.
   const system = [
-    'Tu découpes des vidéos YouTube en chapitres à partir de leur transcript horodaté.',
-    'Règles de densité (impératives) :',
-    '- Vise UN chapitre toutes les 3 à 8 minutes de vidéo.',
-    '- Ne place JAMAIS deux chapitres à moins de 60 secondes d’écart.',
-    '- Le premier chapitre commence à 0 seconde.',
-    '- Un chapitre = un vrai changement de sujet ; startSec doit correspondre au début de ce sujet dans le transcript.',
-    '- Chaque ligne du transcript est préfixée par son horodatage EXACT [m:ss.s] : choisis startSec au plus près du mot où le sujet commence.',
+    resolveChapterPrompt().text,
     '- Ajoute "openingWords" : 3 à 8 mots copiés VERBATIM dans le transcript, exactement ceux prononcés au début du chapitre (ils servent à recaler le début sur le mot précis).',
-    '- Minimum 3 chapitres si la vidéo dépasse 1 minute.',
-    '- Titres courts (60 caractères max), informatifs, dans la langue du transcript, sans numérotation ni emoji.',
     '- Format strict : {"chapters":[{"startSec": <entier en secondes>, "title": "<titre>", "openingWords": "<3 à 8 mots verbatim>"}]} — les clés sont exactement "startSec", "title" et "openingWords" (jamais snake_case ni un autre nom).',
     '- Réponds uniquement avec le JSON demandé.',
   ].join('\n');

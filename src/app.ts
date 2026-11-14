@@ -58,6 +58,7 @@ import {
   storeOpenRouterKey,
 } from './openrouter-key';
 import { testOpenRouterKey } from './openrouter-key-test';
+import { chapterPromptReport, clearChapterPrompt, storeChapterPrompt, validateChapterPrompt } from './chapter-prompt';
 import { createCreditsProvider, type CreditsProvider } from './openrouter-credits';
 import { parseWordsQuery, WORDS_MAX_COUNT } from './video-words';
 import { isMediaWordsUnavailable } from './db/media-words';
@@ -88,6 +89,10 @@ export const OPENROUTER_KEY_ABSENT_MESSAGE =
 /** Message d'erreur (français) : écriture de la clé impossible. */
 export const ADMIN_STORE_FAILED_MESSAGE =
   "Impossible d'enregistrer la clé dans la base de données. Vérifiez que le dossier est accessible en écriture, puis réessayez.";
+
+/** Message d'erreur (français) : écriture des consignes de chapitrage impossible. */
+export const ADMIN_PROMPT_STORE_FAILED_MESSAGE =
+  "Impossible d'enregistrer les consignes dans la base de données. Vérifiez que le dossier est accessible en écriture, puis réessayez.";
 
 /** Message d'erreur (français) : le chapitrage demandé n'existe pas. */
 export const VIDEO_NOT_FOUND_MESSAGE =
@@ -1061,6 +1066,28 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     const resolved = resolveOpenRouterKey();
     if (!resolved.key) return reply.code(400).send({ error: OPENROUTER_KEY_ABSENT_MESSAGE });
     return testOpenRouterKey(resolved.key, { fetchImpl: options.keyTestFetch, model: LLM_MODEL });
+  });
+
+  // Consignes du chapitrage LLM (prompt système éditable). Lecture OUVERTE : ce
+  // n'est pas un secret, et la page principale peut les afficher. Écriture et
+  // réinitialisation réservées à la boucle locale, comme la clé. La partie
+  // technique du prompt (format JSON) n'est PAS éditable : elle reste dans le
+  // code (voir `src/chapters.ts`).
+  app.get('/admin/prompt', async () => chapterPromptReport());
+
+  app.put('/admin/prompt', async (req, reply) => {
+    if (!allowLocalOnly(req, reply)) return;
+    const { text } = z.object({ text: z.string() }).parse(req.body);
+    const verdict = validateChapterPrompt(text);
+    if (!verdict.ok) return reply.code(400).send({ error: verdict.message });
+    if (!storeChapterPrompt(text)) return reply.code(500).send({ error: ADMIN_PROMPT_STORE_FAILED_MESSAGE });
+    return { chapterPrompt: chapterPromptReport() };
+  });
+
+  app.delete('/admin/prompt', async (req, reply) => {
+    if (!allowLocalOnly(req, reply)) return;
+    clearChapterPrompt();
+    return { chapterPrompt: chapterPromptReport() };
   });
 
   return app;
