@@ -180,6 +180,10 @@ test('la création du schéma vérifie le code de sortie et arrête le démarrag
   assert.ok(/if \(\$dbCode -ne 0\) \{/.test(content), 'un code non nul doit être testé');
   assert.ok(content.includes('le serveur ne sera PAS demarre'), 'un échec doit annoncer l’arrêt (pas de serveur cassé)');
   assert.ok(content.includes('$script:LastNpmOutput | Select-Object -Last 10'), 'les dernières lignes doivent être imprimées');
+  // Sortie npm EN DIRECT (une compilation native peut durer plusieurs minutes)
+  // tout en restant conservée pour les diagnostics.
+  assert.ok(content.includes('& npm @Arguments 2>&1 | ForEach-Object'), 'la sortie npm doit défiler en direct');
+  assert.ok(!content.includes('$output = & npm @Arguments 2>&1'), 'la sortie npm ne doit pas être bufferisée');
 });
 
 test('npm run db:push fonctionne réellement dans ce dépôt (base temporaire, hors ligne)', () => {

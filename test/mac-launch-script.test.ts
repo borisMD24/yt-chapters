@@ -106,11 +106,18 @@ test('scripts/launch.sh : options, outils macOS et journaux attendus', () => {
   assert.ok(content.includes('https://ffmpeg.org/download.html'), 'repli manuel ffmpeg (macOS) attendu');
   assert.ok(content.includes('/local/health'), 'l’attente de disponibilité doit interroger /local/health');
   assert.ok(content.includes('| tee '), 'la sortie du serveur doit être dupliquée (tee)');
+  // npm : sortie EN DIRECT (pas de fenêtre figée) et code de sortie de npm (le
+  // premier maillon de la conduite), lu via PIPESTATUS (bash 3.2).
+  assert.ok(content.includes('PIPESTATUS[0]'), 'le code de sortie de npm doit être lu via PIPESTATUS');
+  assert.ok(/npm "\$@" 2>&1 \) \| tee "\$tmp"/.test(content), 'la sortie npm doit défiler en direct (tee sur le terminal)');
   assert.ok(content.includes('serveur-'), 'un journal serveur-*.log est attendu');
   assert.ok(content.includes('demarrage-'), 'un journal demarrage-*.log est attendu');
   // Arrêt : un signal se contente de sortir, et c'est le trap EXIT qui arrête le
   // GROUPE de processus (npm ET ses descendants) — un seul chemin de nettoyage.
   assert.match(content, /trap 'exit 130' INT TERM/, 'un signal doit sortir (trap INT/TERM)');
+  // Fermeture de la fenêtre du Terminal : SIGHUP doit aussi passer par l'EXIT
+  // (sinon le serveur, dans un autre groupe de processus, peut survivre).
+  assert.match(content, /trap 'exit 129' HUP/, 'la fermeture de fenêtre (SIGHUP) doit sortir en 129');
   assert.match(content, /trap cleanup_server EXIT/, 'le nettoyage doit passer par le trap EXIT');
   assert.ok(content.includes('kill -TERM -- "-$SERVER_PGID"'), 'arrêt du groupe de processus attendu');
   // macOS : outils nommés pour ce système.
@@ -441,6 +448,28 @@ if [ -n "\${CKR_FAKE_HOMEBREW_DIR:-}" ] && [ -n "\${CKR_FAKE_BREW_SRC:-}" ]; the
 fi
 exit 0`;
 
+// `sysctl -n hw.optional.arm64` : 1 = matériel Apple Silicon, 0 = Intel. La
+// valeur est pilotée par CKR_FAKE_ARM64.
+const SYSCTL_FAKE = `log "sysctl $*"
+echo "\${CKR_FAKE_ARM64:-0}"
+exit 0`;
+
+// npm factice LENT : deux lignes espacées, pour prouver que la sortie défile en
+// direct au lieu d'être bufferisée jusqu'à la fin (compilation native longue).
+const SLOW_NPM = `log "npm $*"
+case "\${1:-}" in
+  ci|install)
+    echo "LIGNE-NPM-1"
+    sleep "\${CKR_FAKE_NPM_DELAY:-1.2}"
+    echo "LIGNE-NPM-2"
+    mkdir -p node_modules/.bin; : > node_modules/.bin/tsx
+    exit 0 ;;
+  run)
+    if [ "\${2:-}" = "db:push" ]; then mkdir -p data; : > data/chapters.db; fi
+    exit 0 ;;
+  *) exit 0 ;;
+esac`;
+
 function writeFake(binDir: string, name: string, body: string): void {
   const file = join(binDir, name);
   const header = '#!/bin/sh\nlog() { if [ -n "${CKR_FAKE_LOG:-}" ]; then printf \'%s\\n\' "$*" >>"$CKR_FAKE_LOG"; fi; }\n';
@@ -578,11 +607,12 @@ function sleepMs(ms: number): Promise<void> {
 
 /**
  * Pilote bash pour le test de signal : il lance le lanceur EN ARRIÈRE-PLAN dans
- * MSYS, attend la disponibilité, puis envoie TERM. Un signal envoyé depuis
- * Node/Windows n'atteint PAS les traps d'un bash MSYS (mesuré) : le signal doit
- * venir d'un processus MSYS.
+ * MSYS, attend la disponibilité, puis envoie le signal demandé (`TERM` ou `HUP`).
+ * Un signal envoyé depuis Node/Windows n'atteint PAS les traps d'un bash MSYS
+ * (mesuré) : le signal doit venir d'un processus MSYS.
  */
-const DRIVER_TERM = `#!/bin/bash
+function driverScript(sig: string): string {
+  return `#!/bin/bash
 set -u
 REPORT="\${CKR_DRIVER_REPORT:-rapport.txt}"
 OUT="\${CKR_DRIVER_OUT:-launcher.out}"
@@ -601,11 +631,12 @@ h1="$(cat "$CKR_FAKE_HEARTBEAT" 2>/dev/null || echo none)"
 sleep 0.4
 h2="$(cat "$CKR_FAKE_HEARTBEAT" 2>/dev/null || echo none)"
 if [ "$h1" != "$h2" ]; then echo "HEARTBEAT_VIVANT=oui" >> "$REPORT"; else echo "HEARTBEAT_VIVANT=non" >> "$REPORT"; fi
-kill -TERM "$LPID" 2>/dev/null
+kill -${sig} "$LPID" 2>/dev/null
 wait "$LPID" 2>/dev/null
 echo "LANCEUR_CODE=$?" >> "$REPORT"
 exit 0
 `;
+}
 
 function readFakeLog(fx: Fixture): string {
   return existsSync(fx.fakeLog) ? readFileSync(fx.fakeLog, 'utf8') : '';
@@ -950,6 +981,30 @@ test('A. la sortie de Homebrew défile EN DIRECT et reste journalisée', { skip:
   assert.ok(log.includes('LIGNE-BREW-1') && log.includes('LIGNE-BREW-2'), 'les lignes de brew doivent être journalisées');
 });
 
+test('A. la sortie de npm défile EN DIRECT (compilation native non figée)', { skip: skipNoBash }, async () => {
+  const fx = makeFixture('npm-stream');
+  writeFake(fx.binDir, 'npm', SLOW_NPM);
+  const child = spawn(bashPath as string, ['scripts/launch.sh', '--install-only', '--no-browser'], {
+    cwd: fx.dir,
+    env: childEnv(fx, { CKR_FAKE_NPM_DELAY: '1.2' }),
+  });
+  const chunks: { at: number; text: string }[] = [];
+  child.stdout.on('data', (d: Buffer) => chunks.push({ at: Date.now(), text: d.toString('utf8') }));
+  child.stderr.on('data', (d: Buffer) => chunks.push({ at: Date.now(), text: d.toString('utf8') }));
+  child.stdin.end();
+  await new Promise((resolve) => child.on('exit', resolve));
+
+  const line1 = chunks.find((c) => c.text.includes('LIGNE-NPM-1'));
+  const line2 = chunks.find((c) => c.text.includes('LIGNE-NPM-2'));
+  assert.ok(line1 && line2, 'les deux lignes de npm doivent être affichées');
+  // Avec l'ancienne capture `$(npm ...)`, les deux lignes n'arriveraient qu'à la
+  // FIN, quasi simultanément : l'écart prouve le flux en direct.
+  assert.ok(
+    (line2?.at ?? 0) - (line1?.at ?? 0) >= 600,
+    `la sortie de npm doit défiler en direct (écart mesuré : ${(line2?.at ?? 0) - (line1?.at ?? 0)} ms)`,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // B. PATH rafraîchi (équivalent macOS de la relecture du registre)
 // ---------------------------------------------------------------------------
@@ -1096,6 +1151,32 @@ test('Homebrew absent (Intel) : pas de paquet Apple Silicon, repli sur le script
   assert.match(log, /^brew install ffmpeg$/m, 'ffmpeg doit être installé');
 });
 
+test('Apple Silicon : `sysctl` fait foi même si `uname -m` dit x86_64 (Rosetta)', { skip: skipNoBash }, () => {
+  // Cas 1 : le MATÉRIEL est arm64 → paquet signé, malgré un `uname -m` trompeur.
+  const arm = makeFixture('brew-rosetta-arm', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'], omitBrewBin: true });
+  addHomebrewFakes(arm);
+  writeFake(arm.binDir, 'sysctl', SYSCTL_FAKE);
+  const rArm = runLaunch(arm, ['--install-only', '--no-browser'], {
+    input: 'o\no\n',
+    // CKR_TEST_ARCH vide : force la détection réelle (sysctl).
+    env: homebrewEnv(arm, { CKR_TEST_ARCH: '', CKR_FAKE_ARM64: '1' }),
+  });
+  assert.equal(rArm.status, 0, outputOf(rArm));
+  assert.match(readFakeLog(arm), /curl .*Homebrew\.pkg/, 'matériel arm64 ⇒ paquet signé');
+
+  // Cas 2 : matériel Intel → script officiel (pas de paquet Apple Silicon).
+  const intel = makeFixture('brew-rosetta-intel', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'], omitBrewBin: true });
+  addHomebrewFakes(intel);
+  writeFake(intel.binDir, 'sysctl', SYSCTL_FAKE);
+  const rIntel = runLaunch(intel, ['--install-only', '--no-browser'], {
+    input: 'o\no\n',
+    env: homebrewEnv(intel, { CKR_TEST_ARCH: '', CKR_FAKE_ARM64: '0' }),
+  });
+  assert.equal(rIntel.status, 0, outputOf(rIntel));
+  assert.doesNotMatch(readFakeLog(intel), /Homebrew\.pkg/, 'Intel ⇒ aucun paquet Apple Silicon');
+  assert.match(readFakeLog(intel), /curl .*install\.sh/, 'Intel ⇒ script officiel');
+});
+
 test('Homebrew : paquet en échec ⇒ repli automatique sur le script officiel', { skip: skipNoBash }, () => {
   const fx = makeFixture('brew-pkg-fail', { omitFakes: ['brew', 'ffmpeg', 'ffprobe'], omitBrewBin: true });
   addHomebrewFakes(fx);
@@ -1189,14 +1270,15 @@ test('port occupé : bascule sur le suivant ; aucun port libre ⇒ refus explici
   assert.doesNotMatch(readFakeLog(fx), /^npm start$/m, 'aucun serveur ne doit démarrer sur un port occupé');
 });
 
-test('D. TERM pendant que le serveur tourne : aucun orphelin, trap EXIT exécuté', { skip: skipNoBash }, async () => {
+/** Déroule un scénario signal (TERM/HUP) et renvoie les traces du lanceur. */
+async function runSignalDriver(sig: string) {
   const port = await freePort();
   const server = startHealthServer(port, false);
   try {
     await waitForHealth(port);
-    const fx = makeFixture('trap-term');
+    const fx = makeFixture(`trap-${sig.toLowerCase()}`);
     const driver = join(fx.dir, 'driver.sh');
-    writeFileSync(driver, DRIVER_TERM, 'utf8');
+    writeFileSync(driver, driverScript(sig), 'utf8');
     const report = join(fx.dir, 'rapport.txt');
     const launcherOut = join(fx.dir, 'launcher.out');
     const r = spawnSync(bashPath as string, [driver], {
@@ -1213,25 +1295,45 @@ test('D. TERM pendant que le serveur tourne : aucun orphelin, trap EXIT exécut�
         CKR_FAKE_NPM_START_SLEEP: '120',
       }),
     });
-    assert.equal(r.error, undefined, `le pilote doit démarrer (${r.error?.message})`);
-    const reportText = existsSync(report) ? readFileSync(report, 'utf8') : '';
-    assert.match(reportText, /PRET=oui/, `le lanceur doit avoir atteint « Serveur prêt »\n${reportText}`);
-    assert.match(reportText, /HEARTBEAT_VIVANT=oui/, `le petit-fils doit réellement tourner\n${reportText}`);
-    assert.match(reportText, /LANCEUR_CODE=130/, `TERM ⇒ sortie 130 (trap exécuté)\n${reportText}`);
-
-    const out = `${readFileSync(launcherOut, 'utf8')}`;
-    assert.match(norm(out), /Serveur arrete proprement/, 'l’arrêt propre est annoncé');
-    assert.match(readLauncherLog(fx), /Trap EXIT/, 'le trap EXIT doit s’exécuter');
-    assert.ok(existsSync(fx.heartbeat), 'le petit-fils doit avoir écrit');
-
-    // Le descendant (petit-fils) est bien mort avec le groupe : son battement de
-    // cœur doit être FIGÉ.
-    const before = readFileSync(fx.heartbeat, 'utf8');
-    await sleepMs(800);
-    assert.equal(readFileSync(fx.heartbeat, 'utf8'), before, 'aucun orphelin : le battement de cœur doit s’arrêter');
+    return {
+      r,
+      reportText: existsSync(report) ? readFileSync(report, 'utf8') : '',
+      out: existsSync(launcherOut) ? readFileSync(launcherOut, 'utf8') : '',
+      fx,
+    };
   } finally {
     server.kill();
   }
+}
+
+test('D. TERM pendant que le serveur tourne : aucun orphelin, trap EXIT exécuté', { skip: skipNoBash }, async () => {
+  const { r, reportText, out, fx } = await runSignalDriver('TERM');
+  assert.equal(r.error, undefined, `le pilote doit démarrer (${r.error?.message})`);
+  assert.match(reportText, /PRET=oui/, `le lanceur doit avoir atteint « Serveur prêt »\n${reportText}`);
+  assert.match(reportText, /HEARTBEAT_VIVANT=oui/, `le petit-fils doit réellement tourner\n${reportText}`);
+  assert.match(reportText, /LANCEUR_CODE=130/, `TERM ⇒ sortie 130 (trap exécuté)\n${reportText}`);
+
+  assert.match(norm(out), /Serveur arrete proprement/, 'l’arrêt propre est annoncé');
+  assert.match(readLauncherLog(fx), /Trap EXIT/, 'le trap EXIT doit s’exécuter');
+  assert.ok(existsSync(fx.heartbeat), 'le petit-fils doit avoir écrit');
+
+  // Le descendant (petit-fils) est bien mort avec le groupe : son battement de
+  // cœur doit être FIGÉ.
+  const before = readFileSync(fx.heartbeat, 'utf8');
+  await sleepMs(800);
+  assert.equal(readFileSync(fx.heartbeat, 'utf8'), before, 'aucun orphelin : le battement de cœur doit s’arrêter');
+});
+
+test('D. HUP (fermeture de la fenêtre) : sortie 129, trap EXIT, aucun orphelin', { skip: skipNoBash }, async () => {
+  const { r, reportText, out, fx } = await runSignalDriver('HUP');
+  assert.equal(r.error, undefined, `le pilote doit démarrer (${r.error?.message})`);
+  assert.match(reportText, /PRET=oui/, `le lanceur doit avoir atteint « Serveur prêt »\n${reportText}`);
+  assert.match(reportText, /LANCEUR_CODE=129/, `HUP ⇒ sortie 129 (trap exécuté)\n${reportText}`);
+  assert.match(norm(out), /Serveur arrete proprement/, 'l’arrêt propre est annoncé');
+  assert.match(readLauncherLog(fx), /Trap EXIT/, 'le trap EXIT doit s’exécuter');
+  const before = readFileSync(fx.heartbeat, 'utf8');
+  await sleepMs(800);
+  assert.equal(readFileSync(fx.heartbeat, 'utf8'), before, 'aucun orphelin : le battement de cœur doit s’arrêter');
 });
 
 test('D. trap EXIT : un descendant resté vivant est arrêté à la sortie (jamais d’orphelin)', { skip: skipNoBash }, async () => {

@@ -11,10 +11,12 @@
 # `git clone` restitue un fichier non exécutable et le double-clic échoue — de
 # façon silencieuse et déroutante. Le dépôt pose le bit, pas l'utilisateur.
 #
-# Si macOS affiche « le fichier est endommagé » ou refuse l'exécution (dossier
-# TÉLÉCHARGÉ en .zip, donc mis en quarantaine par Gatekeeper) : clic droit sur
-# le fichier → « Ouvrir », puis confirmez. Un dépôt cloné par git n'est PAS mis
-# en quarantaine.
+# Si macOS refuse l'exécution (dossier TÉLÉCHARGÉ en .zip, donc mis en
+# quarantaine par Gatekeeper) : depuis macOS 15, le « clic droit → Ouvrir » ne
+# contourne PLUS Gatekeeper. Double-cliquez une première fois, puis ouvrez
+# Réglages Système → Confidentialité et sécurité → « Ouvrir quand même ».
+# Alternative en Terminal : xattr -dr com.apple.quarantine "<dossier du projet>".
+# Un dépôt cloné par git n'est PAS mis en quarantaine.
 #
 # Options possibles (en ligne de commande) :
 #   ./Démarrer.command --check         vérifie l'environnement sans rien installer

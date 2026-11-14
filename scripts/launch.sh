@@ -283,7 +283,21 @@ HOMEBREW_TMP=''
 # Vrai sur un Mac Apple Silicon (arm64). Neutralisable par les tests via
 # CKR_TEST_ARCH (comme CKR_TEST_OS), faute de pouvoir changer d'architecture.
 is_apple_silicon() {
-  case "${CKR_TEST_ARCH:-$(uname -m)}" in
+  if [ -n "${CKR_TEST_ARCH:-}" ]; then
+    case "$CKR_TEST_ARCH" in
+      arm64|aarch64) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  # `uname -m` MENT sous Rosetta (il répond x86_64 sur un Mac Apple Silicon) :
+  # `sysctl` interroge le matériel réel. Repli sur `uname -m` si indisponible.
+  if command_available sysctl; then
+    case "$(sysctl -n hw.optional.arm64 2>/dev/null)" in
+      1) return 0 ;;
+      0) return 1 ;;
+    esac
+  fi
+  case "$(uname -m 2>/dev/null)" in
     arm64|aarch64) return 0 ;;
     *) return 1 ;;
   esac
@@ -481,18 +495,42 @@ refresh_path() {
 # pour les diagnostics (« pourquoi db:push a échoué ? »).
 NPM_OUT=''
 NPM_CODE=0
+NPM_TMP=''
 npm_run() {
   local label="$1"; shift
-  local line
+  local line tmp code
   NPM_OUT=''
+  NPM_CODE=0
   say_raw "> npm $*"
-  NPM_OUT="$(cd "$ROOT" 2>/dev/null && npm "$@" 2>&1)"
-  NPM_CODE=$?
-  if [ -n "$NPM_OUT" ]; then
-    while IFS= read -r line; do
-      printf '%s\n' "$line"
-      log_line 'NPM' "$line"
-    done <<<"$NPM_OUT"
+  # Sortie EN DIRECT (comme Homebrew), et conservée pour les diagnostics. Sans
+  # cela, une compilation native (`better-sqlite3` sans binaire précompilé) laisse
+  # la fenêtre figée plusieurs minutes. Le code de sortie est celui de npm (premier
+  # maillon de la conduite), lu via PIPESTATUS (bash 3.2).
+  tmp="$(mktemp "${TMPDIR:-/tmp}/ckr-npm.XXXXXX" 2>/dev/null)" || tmp=''
+  NPM_TMP="$tmp"
+  if [ -n "$tmp" ]; then
+    # `tee` affiche la sortie EN DIRECT sur le terminal ET la conserve dans le
+    # temporaire, pour les diagnostics.
+    ( cd "$ROOT" 2>/dev/null && npm "$@" 2>&1 ) | tee "$tmp"
+    code="${PIPESTATUS[0]:-0}"
+    NPM_CODE="$code"
+    NPM_OUT="$(cat "$tmp" 2>/dev/null)"
+    if [ -n "$NPM_OUT" ]; then
+      while IFS= read -r line; do
+        log_line 'NPM' "$line"
+      done <<<"$NPM_OUT"
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+  else
+    # Repli sans fichier temporaire : capture puis affichage (ancien comportement).
+    NPM_OUT="$(cd "$ROOT" 2>/dev/null && npm "$@" 2>&1)"
+    NPM_CODE=$?
+    if [ -n "$NPM_OUT" ]; then
+      while IFS= read -r line; do
+        printf '%s\n' "$line"
+        log_line 'NPM' "$line"
+      done <<<"$NPM_OUT"
+    fi
   fi
   if [ "$NPM_CODE" -ne 0 ]; then
     printf '%s : code de sortie %s\n' "$label" "$NPM_CODE"
@@ -1043,6 +1081,10 @@ cleanup_server() {
   if [ -n "${HOMEBREW_TMP:-}" ]; then
     rm -f "$HOMEBREW_TMP" 2>/dev/null || true
   fi
+  # Idem pour la trace de sortie npm (Ctrl-C pendant npm ci).
+  if [ -n "${NPM_TMP:-}" ]; then
+    rm -f "$NPM_TMP" 2>/dev/null || true
+  fi
   if server_alive; then
     log_line 'EXIT' 'Trap EXIT exécuté : un serveur tournait encore, arrêt du groupe de processus.'
     say 'INFO' 'Arrêt du serveur…'
@@ -1301,6 +1343,10 @@ do_start() {
 # sortir, et c'est l'EXIT qui arrête le serveur — quelle que soit la façon dont le
 # script se termine (fin normale, erreur, Ctrl+C, TERM).
 trap 'exit 130' INT TERM
+# Fermeture de la fenêtre du Terminal : macOS envoie SIGHUP à la session. Le
+# serveur vit dans un AUTRE groupe de processus : sans ce trap, il pourrait
+# survivre et garder le port occupé au relancement. 128 + 1 = 129.
+trap 'exit 129' HUP
 trap cleanup_server EXIT
 
 printf '\n'

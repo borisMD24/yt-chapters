@@ -108,7 +108,7 @@ Démarrer.cmd -ForceInstall
 | « Node.js introuvable » ou version trop ancienne | Acceptez l'installation `winget` proposée, ou installez Node.js LTS depuis <https://nodejs.org/fr/download>, puis relancez `Démarrer.cmd`. |
 | ffmpeg/ffprobe introuvables | Acceptez l'installation `winget` (Gyan.FFmpeg), ou téléchargez « ffmpeg-release-full.7z » sur <https://www.gyan.dev/ffmpeg/builds/>, décompressez-le et **ajoutez son dossier `bin` au `PATH`**, puis rouvrez une fenêtre. |
 | Le port 3000 est occupé | `Démarrer.cmd -Port 3001` (ou fermez le programme qui occupe le port). Le lanceur teste déjà 3000 à 3010. |
-| Windows demande l'autorisation du Pare-feu | Acceptez pour « Réseaux privés » : l'outil écoute sur `0.0.0.0` pour être joignable depuis votre réseau local. Sinon autorisez seulement « Réseaux privés », ou faites écouter le serveur sur la boucle locale (voir plus bas). |
+| Windows demande l'autorisation du Pare-feu | Normalement **non** : le serveur n'écoute que sur `127.0.0.1` par défaut (aucun accès réseau, aucune autorisation demandée). Si vous avez défini `HOST=0.0.0.0` pour l'ouvrir au réseau local, acceptez alors pour « Réseaux privés ». |
 | « Aucune clé OpenRouter n'est configurée » | Ouvrez <http://localhost:3000/admin>, collez la clé, **Enregistrez** puis **Testez la clé**. |
 | Installation des dépendances impossible | Vérifiez la connexion Internet, puis relancez `Démarrer.cmd`. Les journaux détaillés sont dans `logs/`. |
 | Le lanceur s'arrête sur « votre installation de ffmpeg est incomplète » | Votre `ffmpeg` ne sait pas encoder en mp3. Réinstallez-le (`winget install --id Gyan.FFmpeg -e`, ou « ffmpeg-release-full » depuis <https://www.gyan.dev/ffmpeg/builds/>), puis relancez `Démarrer.cmd`. |
@@ -190,9 +190,12 @@ démarre rien.
 
 - **Gatekeeper** : un dépôt **cloné par git n'est pas mis en quarantaine** et se
   lance normalement. En revanche, un dossier **téléchargé** (archive `.zip`, pièce
-  jointe…) peut afficher « *… ne peut pas être ouvert car il provient d'un
-  développeur non identifié* » : faites alors un **clic droit → Ouvrir**, puis
-  confirmez.
+  jointe…) est mis en quarantaine et peut être refusé. **Depuis macOS 15**, le
+  « clic droit → Ouvrir » ne contourne **plus** Gatekeeper : double-cliquez une
+  première fois (le refus s'affiche), puis ouvrez **Réglages Système →
+  Confidentialité et sécurité** et cliquez sur **« Ouvrir quand même »**. En
+  Terminal, on peut aussi retirer la quarantaine :
+  `xattr -dr com.apple.quarantine "<dossier du projet>"`.
 - Le script est **compatible bash 3.2** (c'est ce qui est livré avec macOS). Il
   **n'appelle jamais `sudo` lui-même** : l'élévation de privilèges passe par
   macOS (dialogue d'administration d'`osascript` pour le paquet Homebrew) ou par
@@ -270,6 +273,7 @@ lanceur macOS comme acquis :
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | base OpenRouter |
 | `DB_PATH` | `data/chapters.db` | base SQLite |
 | `PORT` | `3000` | port HTTP |
+| `HOST` | `127.0.0.1` | interface d'écoute ; `0.0.0.0` pour ouvrir explicitement au réseau local |
 | `MEDIA_DIR` | deux niveaux au-dessus du projet | dossier scanné par l'interface (fichiers audio/vidéo) |
 | `UPLOAD_MAX_MB` | `2048` | plafond d'un fichier envoyé depuis la page (Mo) |
 | `UPLOAD_CACHE_DIR` | `data/uploads` | cache d'envoi (médias conservés pour l'éditeur de bornes) |
@@ -398,14 +402,16 @@ dossiers temporaires de découpage ffmpeg, eux, restent supprimés à la fin du 
 
 ### Exposition de l'envoi de fichier (limite connue)
 
-La route d'envoi n'est **pas authentifiée** et le serveur écoute sur `0.0.0.0` :
-sur un réseau local, n'importe quel hôte joignable peut envoyer un fichier et
-occuper jusqu'à `UPLOAD_MAX_MB` dans le cache d'envoi (`UPLOAD_CACHE_DIR`). Les
-autres routes sont bornées par `MEDIA_DIR` ; l'envoi, non. Mesures possibles :
+Par défaut, le serveur n'écoute que sur **`127.0.0.1`** : rien n'est joignable
+depuis le réseau local, et `/admin` (réglages, masque de clé) reste local. La
+route d'envoi n'est **pas authentifiée** : si vous ouvrez le serveur avec
+`HOST=0.0.0.0`, n'importe quel hôte joignable peut envoyer un fichier et occuper
+jusqu'à `UPLOAD_MAX_MB` dans le cache d'envoi (`UPLOAD_CACHE_DIR`). Les autres
+routes sont bornées par `MEDIA_DIR` ; l'envoi, non. Si vous ouvrez au réseau :
 
-- baisser `UPLOAD_MAX_MB` (plafond d'un envoi) ;
-- si l'outil ne sert qu'en local, écouter uniquement sur la boucle locale :
-  dans `src/server.ts`, remplacer `host: '0.0.0.0'` par `host: '127.0.0.1'`.
+- baissez `UPLOAD_MAX_MB` (plafond d'un envoi) ;
+- ne le faites que sur un réseau de confiance (le pare-feu peut alors demander
+  une autorisation).
 
 
 La page fonctionne hors-ligne : aucun CDN, aucune police externe, aucun build.

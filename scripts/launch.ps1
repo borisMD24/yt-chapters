@@ -141,16 +141,16 @@ function Test-CommandAvailable {
 function Invoke-Npm {
   param([string[]]$Arguments, [string]$Label)
   Say-Raw ("> npm " + ($Arguments -join ' '))
-  $output = & npm @Arguments 2>&1
-  $code = $LASTEXITCODE
-  # Sortie conservée pour les diagnostics (« pourquoi db:push a échoué ? »).
+  # Sortie EN DIRECT (une compilation native peut durer plusieurs minutes) ET
+  # conservée pour les diagnostics (« pourquoi db:push a échoué ? »).
   $script:LastNpmOutput = @()
-  foreach ($line in $output) {
-    $text = if ($line -is [System.Management.Automation.ErrorRecord]) { $line.ToString() } else { [string]$line }
+  & npm @Arguments 2>&1 | ForEach-Object {
+    $text = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { [string]$_ }
     $script:LastNpmOutput += $text
     Write-Host $text
     Write-Log $text 'NPM'
   }
+  $code = $LASTEXITCODE
   if ($code -ne 0) { Write-Host ("{0} : code de sortie {1}" -f $Label, $code) -ForegroundColor Yellow }
   return $code
 }
